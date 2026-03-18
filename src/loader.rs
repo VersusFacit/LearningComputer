@@ -39,10 +39,8 @@ pub fn read_snapshot(path: &Path, previous_state: Option<&SnapshotState>) -> Res
         source,
     })?;
 
-    if let Some(previous_state) = previous_state {
-        if modified_at == previous_state.modified_at {
-            return Ok(ReadOutcome::Unchanged { modified_at });
-        }
+    if previous_state.is_some_and(|previous_state| modified_at == previous_state.modified_at) {
+        return Ok(ReadOutcome::Unchanged { modified_at });
     }
 
     let bytes = fs::read(path).map_err(|source| LoadError::Read {
@@ -51,10 +49,8 @@ pub fn read_snapshot(path: &Path, previous_state: Option<&SnapshotState>) -> Res
     })?;
     let checksum = blake3::hash(&bytes);
 
-    if let Some(previous_state) = previous_state {
-        if checksum == previous_state.checksum {
-            return Ok(ReadOutcome::Unchanged { modified_at });
-        }
+    if previous_state.is_some_and(|previous_state| checksum == previous_state.checksum) {
+        return Ok(ReadOutcome::Unchanged { modified_at });
     }
 
     let text = String::from_utf8(bytes).map_err(|source| LoadError::InvalidUtf8 {
