@@ -57,8 +57,8 @@ const fn gundam_red() -> Color {
     Color::Rgb(214, 67, 57)
 }
 
-const fn gundam_green() -> Color {
-    Color::Rgb(128, 201, 132)
+const fn gundam_black() -> Color {
+    Color::Rgb(20, 22, 28)
 }
 
 const fn gundam_border() -> Color {
@@ -313,7 +313,7 @@ fn render(frame: &mut Frame<'_>, app: &App) {
 fn render_header(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let status_style = match app.status.tone {
         Tone::Neutral => Style::default().fg(gundam_muted()),
-        Tone::Success => Style::default().fg(gundam_green()),
+        Tone::Success => Style::default().fg(gundam_yellow()),
         Tone::Warning => Style::default().fg(gundam_red()),
     };
 
@@ -409,7 +409,7 @@ fn render_list(frame: &mut Frame<'_>, area: Rect, app: &App) {
             .map(|task| {
                 ListItem::new(Line::from(vec![
                     Span::styled(
-                        format!("{:>4} ", task.rank),
+                        format!("{:>4} ", format!("#{}", task.rank)),
                         Style::default().fg(gundam_yellow()),
                     ),
                     Span::styled(task.title.as_str(), Style::default().fg(gundam_text())),
@@ -427,7 +427,7 @@ fn render_list(frame: &mut Frame<'_>, area: Rect, app: &App) {
             .map(|task| {
                 ListItem::new(Line::from(vec![
                     Span::styled(
-                        format!("{:>4} ", task.rank),
+                        format!("{:>4} ", format!("#{}", task.rank)),
                         Style::default().fg(gundam_yellow()),
                     ),
                     Span::styled(task.title.as_str(), Style::default().fg(gundam_text())),
@@ -442,14 +442,9 @@ fn render_list(frame: &mut Frame<'_>, area: Rect, app: &App) {
         Screen::P2 => app
             .controller
             .p2()
-            .iter()
-            .enumerate()
-            .map(|(index, task)| {
+            .map(|task| {
                 ListItem::new(Line::from(vec![
-                    Span::styled(
-                        format!("{:>2} ", index + 1),
-                        Style::default().fg(gundam_yellow()),
-                    ),
+                    Span::styled("* ", Style::default().fg(gundam_yellow())),
                     Span::styled(task.title.as_str(), Style::default().fg(gundam_text())),
                 ]))
             })
@@ -457,14 +452,9 @@ fn render_list(frame: &mut Frame<'_>, area: Rect, app: &App) {
         Screen::P3 => app
             .controller
             .p3()
-            .iter()
-            .enumerate()
-            .map(|(index, task)| {
+            .map(|task| {
                 ListItem::new(Line::from(vec![
-                    Span::styled(
-                        format!("{:>2} ", index + 1),
-                        Style::default().fg(gundam_yellow()),
-                    ),
+                    Span::styled("* ", Style::default().fg(gundam_yellow())),
                     Span::styled(task.title.as_str(), Style::default().fg(gundam_text())),
                     Span::raw(" "),
                     Span::styled(
@@ -534,7 +524,10 @@ fn render_footer(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let footer = Paragraph::new(Line::from(vec![
         Span::styled(" q ", Style::default().fg(gundam_text()).bg(gundam_red())),
         Span::raw("quit  "),
-        Span::styled(" r ", Style::default().fg(gundam_text()).bg(gundam_green())),
+        Span::styled(
+            " r ",
+            Style::default().fg(gundam_yellow()).bg(gundam_black()),
+        ),
         Span::raw("reload  "),
         Span::styled(
             " d ",
@@ -761,7 +754,7 @@ fn daily_list_item(entry: DailyEntry<'_>) -> ListItem<'_> {
             .fg(gundam_red())
             .add_modifier(Modifier::BOLD)
     } else {
-        Style::default().fg(gundam_green())
+        Style::default().fg(gundam_muted())
     };
 
     ListItem::new(Line::from(vec![

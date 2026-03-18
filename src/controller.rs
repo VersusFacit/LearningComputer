@@ -68,6 +68,8 @@ struct Selections {
 struct Derived {
     p1_order: Vec<usize>,
     top3_order: Vec<usize>,
+    p2_order: Vec<usize>,
+    p3_order: Vec<usize>,
     daily: Vec<DailyDerived>,
 }
 
@@ -158,12 +160,18 @@ impl Controller {
             .filter_map(|&index| self.snapshot.tasks.p1.get(index))
     }
 
-    pub fn p2(&self) -> &[P2Task] {
-        &self.snapshot.tasks.p2
+    pub fn p2(&self) -> impl Iterator<Item = &P2Task> + '_ {
+        self.derived
+            .p2_order
+            .iter()
+            .filter_map(|&index| self.snapshot.tasks.p2.get(index))
     }
 
-    pub fn p3(&self) -> &[P3Task] {
-        &self.snapshot.tasks.p3
+    pub fn p3(&self) -> impl Iterator<Item = &P3Task> + '_ {
+        self.derived
+            .p3_order
+            .iter()
+            .filter_map(|&index| self.snapshot.tasks.p3.get(index))
     }
 
     pub fn daily(&self) -> impl Iterator<Item = DailyEntry<'_>> + '_ {
@@ -213,8 +221,8 @@ impl Controller {
         match screen {
             Screen::Top3 => self.top_three_at(index).map(Selected::P1),
             Screen::P1 => self.p1_at(index).map(Selected::P1),
-            Screen::P2 => self.p2().get(index).map(Selected::P2),
-            Screen::P3 => self.p3().get(index).map(Selected::P3),
+            Screen::P2 => self.p2_at(index).map(Selected::P2),
+            Screen::P3 => self.p3_at(index).map(Selected::P3),
             Screen::Daily => self.daily_at(index).map(Selected::Daily),
             Screen::Decisions => self.decisions().get(index).map(Selected::Decision),
         }
@@ -241,6 +249,20 @@ impl Controller {
             .and_then(|entry| self.daily_from(entry))
     }
 
+    fn p2_at(&self, index: usize) -> Option<&P2Task> {
+        self.derived
+            .p2_order
+            .get(index)
+            .and_then(|&task_index| self.snapshot.tasks.p2.get(task_index))
+    }
+
+    fn p3_at(&self, index: usize) -> Option<&P3Task> {
+        self.derived
+            .p3_order
+            .get(index)
+            .and_then(|&task_index| self.snapshot.tasks.p3.get(task_index))
+    }
+
     fn daily_from(&self, entry: &DailyDerived) -> Option<DailyEntry<'_>> {
         let task = if entry.active {
             self.snapshot.dailies.active.get(entry.task_index)
@@ -260,8 +282,8 @@ impl Controller {
         match screen {
             Screen::Top3 => self.derived.top3_order.len(),
             Screen::P1 => self.derived.p1_order.len(),
-            Screen::P2 => self.snapshot.tasks.p2.len(),
-            Screen::P3 => self.snapshot.tasks.p3.len(),
+            Screen::P2 => self.derived.p2_order.len(),
+            Screen::P3 => self.derived.p3_order.len(),
             Screen::Daily => self.derived.daily.len(),
             Screen::Decisions => self.snapshot.decisions.len(),
         }
@@ -353,6 +375,12 @@ impl Derived {
 
         let top3_order = p1_order.iter().take(TOP_THREE_LIMIT).copied().collect();
 
+        let mut p2_order: Vec<_> = (0..snapshot.tasks.p2.len()).collect();
+        p2_order.sort_by_key(|&index| snapshot.tasks.p2[index].title.as_str());
+
+        let mut p3_order: Vec<_> = (0..snapshot.tasks.p3.len()).collect();
+        p3_order.sort_by_key(|&index| snapshot.tasks.p3[index].title.as_str());
+
         let daily = snapshot
             .dailies
             .active
@@ -376,6 +404,8 @@ impl Derived {
         Self {
             p1_order,
             top3_order,
+            p2_order,
+            p3_order,
             daily,
         }
     }
@@ -562,21 +592,13 @@ decisions:
     }
 
     #[test]
-    fn keeps_p2_and_p3_in_source_order() {
+    fn sorts_p2_and_p3_alphabetically_once() {
         let controller = test_controller();
-        let p2_ids: Vec<_> = controller
-            .p2()
-            .iter()
-            .map(|task| task.id.as_str())
-            .collect();
-        let p3_ids: Vec<_> = controller
-            .p3()
-            .iter()
-            .map(|task| task.id.as_str())
-            .collect();
+        let p2_ids: Vec<_> = controller.p2().map(|task| task.id.as_str()).collect();
+        let p3_ids: Vec<_> = controller.p3().map(|task| task.id.as_str()).collect();
 
-        assert_eq!(p2_ids, vec!["p2-002", "p2-001"]);
-        assert_eq!(p3_ids, vec!["p3-002", "p3-001"]);
+        assert_eq!(p2_ids, vec!["p2-001", "p2-002"]);
+        assert_eq!(p3_ids, vec!["p3-001", "p3-002"]);
     }
 
     #[test]
@@ -701,7 +723,7 @@ decisions:
 
         assert_eq!(controller.selection(), 1);
         match controller.selected() {
-            Some(Selected::P2(task)) => assert_eq!(task.id, "p2-001"),
+            Some(Selected::P2(task)) => assert_eq!(task.id, "p2-002"),
             _ => panic!("expected p2 selection"),
         }
     }
