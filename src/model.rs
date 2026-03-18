@@ -251,8 +251,14 @@ decisions:
         assert_eq!(snapshot.dailies.later.len(), 1);
         assert_eq!(snapshot.session_state.daily_logs.len(), 1);
         assert_eq!(snapshot.decisions.len(), 1);
-        assert_eq!(snapshot.tasks.p3[0].completed_at, Some(NaiveDate::from_ymd_opt(2026, 3, 17).unwrap()));
-        assert_eq!(snapshot.dailies.active[0].hit_dates, vec![NaiveDate::from_ymd_opt(2026, 3, 10).unwrap()]);
+        assert_eq!(
+            snapshot.tasks.p3[0].completed_at,
+            Some(NaiveDate::from_ymd_opt(2026, 3, 17).unwrap())
+        );
+        assert_eq!(
+            snapshot.dailies.active[0].hit_dates,
+            vec![NaiveDate::from_ymd_opt(2026, 3, 10).unwrap()]
+        );
     }
 
     #[test]
@@ -291,7 +297,8 @@ decisions: []
 
     #[test]
     fn rejects_malformed_yaml() {
-        let err = Snapshot::from_yaml_str("schema_version: [").expect_err("invalid YAML should fail");
+        let err =
+            Snapshot::from_yaml_str("schema_version: [").expect_err("invalid YAML should fail");
         assert!(matches!(err, ParseError::InvalidYaml(_)));
     }
 

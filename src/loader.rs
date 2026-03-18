@@ -27,17 +27,22 @@ pub fn load_tasks_text(path: &Path) -> Result<String, LoadError> {
     })
 }
 
-pub fn read_snapshot(path: &Path, previous_state: Option<&SnapshotState>) -> Result<ReadOutcome, LoadError> {
+pub fn read_snapshot(
+    path: &Path,
+    previous_state: Option<&SnapshotState>,
+) -> Result<ReadOutcome, LoadError> {
     validate_source_path(path)?;
 
     let metadata = fs::metadata(path).map_err(|source| LoadError::Metadata {
         path: path.to_path_buf(),
         source,
     })?;
-    let modified_at = metadata.modified().map_err(|source| LoadError::ModifiedTime {
-        path: path.to_path_buf(),
-        source,
-    })?;
+    let modified_at = metadata
+        .modified()
+        .map_err(|source| LoadError::ModifiedTime {
+            path: path.to_path_buf(),
+            source,
+        })?;
 
     if previous_state.is_some_and(|previous_state| modified_at == previous_state.modified_at) {
         return Ok(ReadOutcome::Unchanged { modified_at });
@@ -197,11 +202,14 @@ decisions: []
     #[test]
     fn read_snapshot_skips_when_timestamp_is_unchanged() {
         let path = write_temp_yaml("unchanged.yaml", VALID_YAML);
-        let ReadOutcome::Loaded(initial_state) = read_snapshot(&path, None).expect("initial load should succeed") else {
+        let ReadOutcome::Loaded(initial_state) =
+            read_snapshot(&path, None).expect("initial load should succeed")
+        else {
             panic!("expected loaded state");
         };
 
-        let outcome = read_snapshot(&path, Some(&initial_state)).expect("second read should succeed");
+        let outcome =
+            read_snapshot(&path, Some(&initial_state)).expect("second read should succeed");
         assert!(matches!(outcome, ReadOutcome::Unchanged { .. }));
 
         fs::remove_file(path).expect("temp file should be removed");
@@ -210,16 +218,21 @@ decisions: []
     #[test]
     fn read_snapshot_skips_parse_when_timestamp_changes_but_content_does_not() {
         let path = write_temp_yaml("same-bytes.yaml", VALID_YAML);
-        let ReadOutcome::Loaded(initial_state) = read_snapshot(&path, None).expect("initial load should succeed") else {
+        let ReadOutcome::Loaded(initial_state) =
+            read_snapshot(&path, None).expect("initial load should succeed")
+        else {
             panic!("expected loaded state");
         };
 
         wait_for_timestamp_tick();
         fs::write(&path, VALID_YAML).expect("temp file should be rewritten");
 
-        let outcome = read_snapshot(&path, Some(&initial_state)).expect("second read should succeed");
+        let outcome =
+            read_snapshot(&path, Some(&initial_state)).expect("second read should succeed");
         match outcome {
-            ReadOutcome::Unchanged { modified_at } => assert!(modified_at > initial_state.modified_at),
+            ReadOutcome::Unchanged { modified_at } => {
+                assert!(modified_at > initial_state.modified_at)
+            }
             _ => panic!("expected unchanged outcome"),
         }
 
@@ -229,7 +242,9 @@ decisions: []
     #[test]
     fn read_snapshot_reloads_when_content_changes() {
         let path = write_temp_yaml("changed.yaml", VALID_YAML);
-        let ReadOutcome::Loaded(initial_state) = read_snapshot(&path, None).expect("initial load should succeed") else {
+        let ReadOutcome::Loaded(initial_state) =
+            read_snapshot(&path, None).expect("initial load should succeed")
+        else {
             panic!("expected loaded state");
         };
 
@@ -242,7 +257,10 @@ decisions: []
             panic!("expected reloaded state");
         };
 
-        assert_eq!(reloaded_state.snapshot.tasks.p1[0].title, "Priority Item Beta");
+        assert_eq!(
+            reloaded_state.snapshot.tasks.p1[0].title,
+            "Priority Item Beta"
+        );
         assert_ne!(reloaded_state.checksum, initial_state.checksum);
 
         fs::remove_file(path).expect("temp file should be removed");
@@ -251,18 +269,24 @@ decisions: []
     #[test]
     fn read_snapshot_preserves_last_good_state_on_invalid_reload() {
         let path = write_temp_yaml("invalid-reload.yaml", VALID_YAML);
-        let ReadOutcome::Loaded(initial_state) = read_snapshot(&path, None).expect("initial load should succeed") else {
+        let ReadOutcome::Loaded(initial_state) =
+            read_snapshot(&path, None).expect("initial load should succeed")
+        else {
             panic!("expected loaded state");
         };
 
         wait_for_timestamp_tick();
         fs::write(&path, "schema_version: [").expect("temp file should be rewritten");
 
-        let outcome = read_snapshot(&path, Some(&initial_state)).expect("reload check should succeed");
+        let outcome =
+            read_snapshot(&path, Some(&initial_state)).expect("reload check should succeed");
         match outcome {
             ReadOutcome::Rejected { error } => {
                 assert!(matches!(error, ParseError::InvalidYaml(_)));
-                assert_eq!(initial_state.snapshot.tasks.p1[0].title, "Priority Item Alpha");
+                assert_eq!(
+                    initial_state.snapshot.tasks.p1[0].title,
+                    "Priority Item Alpha"
+                );
             }
             _ => panic!("expected rejected reload"),
         }
