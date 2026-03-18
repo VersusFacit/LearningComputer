@@ -47,3 +47,11 @@ pub enum LoadError {
     #[error(transparent)]
     Parse(#[from] ParseError),
 }
+
+#[derive(Debug, Error)]
+pub enum AppError {
+    #[error(transparent)]
+    Io(#[from] io::Error),
+    #[error(transparent)]
+    Load(#[from] LoadError),
+}

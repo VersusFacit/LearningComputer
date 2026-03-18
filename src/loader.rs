@@ -6,22 +6,34 @@ use crate::error::{LoadError, ParseError};
 use crate::model::Snapshot;
 
 #[derive(Clone, Debug)]
-pub struct SnapshotState {
-    pub snapshot: Snapshot,
+pub struct SourceState {
     pub modified_at: SystemTime,
     pub checksum: blake3::Hash,
 }
 
 #[derive(Debug)]
 pub enum ReadOutcome {
-    Loaded(SnapshotState),
-    Unchanged { modified_at: SystemTime },
-    Rejected { error: ParseError },
+    Loaded {
+        snapshot: Snapshot,
+        source_state: SourceState,
+    },
+    Unchanged {
+        source_state: SourceState,
+    },
+    Rejected {
+        error: ParseError,
+        source_state: SourceState,
+    },
 }
 
 pub fn load_tasks_text(path: &Path) -> Result<String, LoadError> {
     validate_source_path(path)?;
-    fs::read_to_string(path).map_err(|source| LoadError::Read {
+    let bytes = fs::read(path).map_err(|source| LoadError::Read {
+        path: path.to_path_buf(),
+        source,
+    })?;
+
+    String::from_utf8(bytes).map_err(|source| LoadError::InvalidUtf8 {
         path: path.to_path_buf(),
         source,
     })
@@ -29,7 +41,7 @@ pub fn load_tasks_text(path: &Path) -> Result<String, LoadError> {
 
 pub fn read_snapshot(
     path: &Path,
-    previous_state: Option<&SnapshotState>,
+    previous_state: Option<&SourceState>,
 ) -> Result<ReadOutcome, LoadError> {
     validate_source_path(path)?;
 
@@ -44,32 +56,36 @@ pub fn read_snapshot(
             source,
         })?;
 
-    if previous_state.is_some_and(|previous_state| modified_at == previous_state.modified_at) {
-        return Ok(ReadOutcome::Unchanged { modified_at });
+    if let Some(previous_state) = previous_state {
+        if modified_at == previous_state.modified_at {
+            return Ok(ReadOutcome::Unchanged {
+                source_state: previous_state.clone(),
+            });
+        }
     }
 
-    let bytes = fs::read(path).map_err(|source| LoadError::Read {
-        path: path.to_path_buf(),
-        source,
-    })?;
-    let checksum = blake3::hash(&bytes);
+    let text = load_tasks_text(path)?;
+    let checksum = blake3::hash(text.as_bytes());
 
-    if previous_state.is_some_and(|previous_state| checksum == previous_state.checksum) {
-        return Ok(ReadOutcome::Unchanged { modified_at });
+    let source_state = SourceState {
+        modified_at,
+        checksum,
+    };
+
+    if previous_state.is_some_and(|previous_state| source_state.checksum == previous_state.checksum)
+    {
+        return Ok(ReadOutcome::Unchanged { source_state });
     }
-
-    let text = String::from_utf8(bytes).map_err(|source| LoadError::InvalidUtf8 {
-        path: path.to_path_buf(),
-        source,
-    })?;
 
     match Snapshot::from_yaml_str(&text) {
-        Ok(snapshot) => Ok(ReadOutcome::Loaded(SnapshotState {
+        Ok(snapshot) => Ok(ReadOutcome::Loaded {
             snapshot,
-            modified_at,
-            checksum,
-        })),
-        Err(error) if previous_state.is_some() => Ok(ReadOutcome::Rejected { error }),
+            source_state,
+        }),
+        Err(error) if previous_state.is_some() => Ok(ReadOutcome::Rejected {
+            error,
+            source_state,
+        }),
         Err(error) => Err(LoadError::Parse(error)),
     }
 }
@@ -190,11 +206,11 @@ decisions: []
         let path = write_temp_yaml("initial.yaml", VALID_YAML);
 
         let outcome = read_snapshot(&path, None).expect("initial load should succeed");
-        let ReadOutcome::Loaded(state) = outcome else {
+        let ReadOutcome::Loaded { snapshot, .. } = outcome else {
             panic!("expected loaded state");
         };
 
-        assert_eq!(state.snapshot.schema_version, 1);
+        assert_eq!(snapshot.schema_version, 1);
 
         fs::remove_file(path).expect("temp file should be removed");
     }
@@ -202,8 +218,10 @@ decisions: []
     #[test]
     fn read_snapshot_skips_when_timestamp_is_unchanged() {
         let path = write_temp_yaml("unchanged.yaml", VALID_YAML);
-        let ReadOutcome::Loaded(initial_state) =
-            read_snapshot(&path, None).expect("initial load should succeed")
+        let ReadOutcome::Loaded {
+            source_state: initial_state,
+            ..
+        } = read_snapshot(&path, None).expect("initial load should succeed")
         else {
             panic!("expected loaded state");
         };
@@ -218,8 +236,10 @@ decisions: []
     #[test]
     fn read_snapshot_skips_parse_when_timestamp_changes_but_content_does_not() {
         let path = write_temp_yaml("same-bytes.yaml", VALID_YAML);
-        let ReadOutcome::Loaded(initial_state) =
-            read_snapshot(&path, None).expect("initial load should succeed")
+        let ReadOutcome::Loaded {
+            source_state: initial_state,
+            ..
+        } = read_snapshot(&path, None).expect("initial load should succeed")
         else {
             panic!("expected loaded state");
         };
@@ -230,8 +250,8 @@ decisions: []
         let outcome =
             read_snapshot(&path, Some(&initial_state)).expect("second read should succeed");
         match outcome {
-            ReadOutcome::Unchanged { modified_at } => {
-                assert!(modified_at > initial_state.modified_at)
+            ReadOutcome::Unchanged { source_state } => {
+                assert!(source_state.modified_at > initial_state.modified_at)
             }
             _ => panic!("expected unchanged outcome"),
         }
@@ -242,8 +262,10 @@ decisions: []
     #[test]
     fn read_snapshot_reloads_when_content_changes() {
         let path = write_temp_yaml("changed.yaml", VALID_YAML);
-        let ReadOutcome::Loaded(initial_state) =
-            read_snapshot(&path, None).expect("initial load should succeed")
+        let ReadOutcome::Loaded {
+            source_state: initial_state,
+            ..
+        } = read_snapshot(&path, None).expect("initial load should succeed")
         else {
             panic!("expected loaded state");
         };
@@ -253,15 +275,16 @@ decisions: []
         fs::write(&path, changed_yaml).expect("temp file should be rewritten");
 
         let outcome = read_snapshot(&path, Some(&initial_state)).expect("reload should succeed");
-        let ReadOutcome::Loaded(reloaded_state) = outcome else {
+        let ReadOutcome::Loaded {
+            snapshot,
+            source_state,
+        } = outcome
+        else {
             panic!("expected reloaded state");
         };
 
-        assert_eq!(
-            reloaded_state.snapshot.tasks.p1[0].title,
-            "Priority Item Beta"
-        );
-        assert_ne!(reloaded_state.checksum, initial_state.checksum);
+        assert_eq!(snapshot.tasks.p1[0].title, "Priority Item Beta");
+        assert_ne!(source_state.checksum, initial_state.checksum);
 
         fs::remove_file(path).expect("temp file should be removed");
     }
@@ -269,8 +292,10 @@ decisions: []
     #[test]
     fn read_snapshot_preserves_last_good_state_on_invalid_reload() {
         let path = write_temp_yaml("invalid-reload.yaml", VALID_YAML);
-        let ReadOutcome::Loaded(initial_state) =
-            read_snapshot(&path, None).expect("initial load should succeed")
+        let ReadOutcome::Loaded {
+            snapshot: initial_snapshot,
+            source_state: initial_state,
+        } = read_snapshot(&path, None).expect("initial load should succeed")
         else {
             panic!("expected loaded state");
         };
@@ -281,12 +306,9 @@ decisions: []
         let outcome =
             read_snapshot(&path, Some(&initial_state)).expect("reload check should succeed");
         match outcome {
-            ReadOutcome::Rejected { error } => {
+            ReadOutcome::Rejected { error, .. } => {
                 assert!(matches!(error, ParseError::InvalidYaml(_)));
-                assert_eq!(
-                    initial_state.snapshot.tasks.p1[0].title,
-                    "Priority Item Alpha"
-                );
+                assert_eq!(initial_snapshot.tasks.p1[0].title, "Priority Item Alpha");
             }
             _ => panic!("expected rejected reload"),
         }

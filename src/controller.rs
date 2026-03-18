@@ -12,13 +12,13 @@ pub enum Screen {
     P2,
     P3,
     Daily,
+    Decisions,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DetailMode {
     Closed,
     Item,
-    Decisions,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -41,6 +41,7 @@ pub enum Selected<'a> {
     P2(&'a P2Task),
     P3(&'a P3Task),
     Daily(DailyEntry<'a>),
+    Decision(&'a Decision),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -60,6 +61,7 @@ struct Selections {
     p2: usize,
     p3: usize,
     daily: usize,
+    decisions: usize,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -101,8 +103,7 @@ impl Controller {
     pub fn cycle_detail_mode(&mut self) {
         self.detail_mode = match self.detail_mode {
             DetailMode::Closed => DetailMode::Item,
-            DetailMode::Item => DetailMode::Decisions,
-            DetailMode::Decisions => DetailMode::Closed,
+            DetailMode::Item => DetailMode::Closed,
         };
     }
 
@@ -180,6 +181,10 @@ impl Controller {
         &self.snapshot.decisions
     }
 
+    pub fn captured_on(&self) -> NaiveDate {
+        self.snapshot.captured_on
+    }
+
     pub fn replace_snapshot(&mut self, snapshot: Snapshot) {
         let restore_state = SelectionRestoreState {
             top3_selected_id: self.id_for(Screen::Top3),
@@ -187,6 +192,7 @@ impl Controller {
             p2_selected_id: self.id_for(Screen::P2),
             p3_selected_id: self.id_for(Screen::P3),
             daily_selected_id: self.id_for(Screen::Daily),
+            decisions_selected_id: self.id_for(Screen::Decisions),
         };
 
         self.snapshot = snapshot;
@@ -196,6 +202,10 @@ impl Controller {
         self.restore(Screen::P2, restore_state.p2_selected_id.as_deref());
         self.restore(Screen::P3, restore_state.p3_selected_id.as_deref());
         self.restore(Screen::Daily, restore_state.daily_selected_id.as_deref());
+        self.restore(
+            Screen::Decisions,
+            restore_state.decisions_selected_id.as_deref(),
+        );
         self.repair_selection(self.screen);
     }
 
@@ -206,6 +216,7 @@ impl Controller {
             Screen::P2 => self.p2().get(index).map(Selected::P2),
             Screen::P3 => self.p3().get(index).map(Selected::P3),
             Screen::Daily => self.daily_at(index).map(Selected::Daily),
+            Screen::Decisions => self.decisions().get(index).map(Selected::Decision),
         }
     }
 
@@ -252,6 +263,7 @@ impl Controller {
             Screen::P2 => self.snapshot.tasks.p2.len(),
             Screen::P3 => self.snapshot.tasks.p3.len(),
             Screen::Daily => self.derived.daily.len(),
+            Screen::Decisions => self.snapshot.decisions.len(),
         }
     }
 
@@ -289,6 +301,7 @@ impl Controller {
         self.repair_selection(Screen::P2);
         self.repair_selection(Screen::P3);
         self.repair_selection(Screen::Daily);
+        self.repair_selection(Screen::Decisions);
     }
 
     /// Repair a stored selection after the underlying data changes.
@@ -317,6 +330,7 @@ impl Selections {
             Screen::P2 => &self.p2,
             Screen::P3 => &self.p3,
             Screen::Daily => &self.daily,
+            Screen::Decisions => &self.decisions,
         }
     }
 
@@ -327,6 +341,7 @@ impl Selections {
             Screen::P2 => &mut self.p2,
             Screen::P3 => &mut self.p3,
             Screen::Daily => &mut self.daily,
+            Screen::Decisions => &mut self.decisions,
         }
     }
 }
@@ -395,6 +410,7 @@ fn selected_id(selected: Selected<'_>) -> String {
         Selected::P2(task) => task.id.clone(),
         Selected::P3(task) => task.id.clone(),
         Selected::Daily(entry) => entry.task.id.clone(),
+        Selected::Decision(decision) => decision.id.clone(),
     }
 }
 
@@ -405,6 +421,7 @@ struct SelectionRestoreState {
     p2_selected_id: Option<String>,
     p3_selected_id: Option<String>,
     daily_selected_id: Option<String>,
+    decisions_selected_id: Option<String>,
 }
 
 #[cfg(test)]
@@ -605,8 +622,6 @@ decisions:
         controller.cycle_detail_mode();
         assert_eq!(controller.detail_mode, DetailMode::Item);
         controller.cycle_detail_mode();
-        assert_eq!(controller.detail_mode, DetailMode::Decisions);
-        controller.cycle_detail_mode();
         assert_eq!(controller.detail_mode, DetailMode::Closed);
     }
 
@@ -653,11 +668,22 @@ decisions:
     }
 
     #[test]
-    fn exposes_decisions_for_the_future_detail_panel() {
+    fn exposes_decisions_for_the_decisions_screen() {
         let controller = test_controller();
 
         assert_eq!(controller.decisions().len(), 1);
         assert_eq!(controller.decisions()[0].id, "policy-001");
+    }
+
+    #[test]
+    fn exposes_selected_decision_for_rendering() {
+        let mut controller = test_controller();
+        controller.set_screen(Screen::Decisions);
+
+        match controller.selected() {
+            Some(Selected::Decision(decision)) => assert_eq!(decision.id, "policy-001"),
+            _ => panic!("expected decision selection"),
+        }
     }
 
     #[test]

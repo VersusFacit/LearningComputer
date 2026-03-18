@@ -1,0 +1,140 @@
+schema_version: 1
+captured_on: 2026-03-17
+source_files:
+  - fixtures/readme-demo.yml
+ingestion_rules:
+  - Keep the source read-only.
+  - Treat this file as a demo snapshot for screenshots.
+tasks:
+  p1:
+    - id: p1-001
+      rank: 1
+      status: todo
+      title: Design the terminal chrome
+      raw_text: Sketch a playful frame, loud footer hints, and a crisp tab bar.
+      links:
+        - https://example.com/terminal-inspiration
+      notes:
+        - Lean bright and readable.
+        - Make the top three feel special.
+      estimate_minutes_min: 25
+      estimate_minutes_max: 40
+    - id: p1-002
+      rank: 2
+      status: todo
+      title: Tune keyboard navigation
+      raw_text: Verify wraparound movement and fast jumps feel natural.
+      links: []
+      notes:
+        - j/k and arrows should match.
+    - id: p1-003
+      rank: 3
+      status: done
+      title: Build a screenshot-ready demo file
+      raw_text: Keep the data generic, colorful, and safe to publish.
+      links: []
+      notes:
+        - This task is already finished for the README.
+      completed_at: 2026-03-17
+  p2:
+    - id: p2-001
+      source_order: 1
+      status: todo
+      title: Gather palette ideas
+      raw_text: Collect a few neon-on-charcoal combinations that still read cleanly.
+      links:
+        - https://example.com/color-systems
+      notes: []
+    - id: p2-002
+      source_order: 2
+      status: todo
+      title: Review empty-state copy
+      raw_text: Make sure missing-data screens still feel intentional.
+      links: []
+      notes:
+        - Avoid robotic placeholder text.
+  p3:
+    - id: p3-001
+      source_order: 1
+      status: todo
+      title: Collect future ideas
+      raw_text: Save room for CRUD flows, trends, and agent-aware analysis later.
+      links: []
+      notes:
+        - Keep scope out of the initial viewer.
+    - id: p3-002
+      source_order: 2
+      status: done
+      title: Preserve one owned snapshot
+      raw_text: The UI should borrow from controller data instead of copying strings around.
+      links: []
+      notes: []
+      completed_at: 2026-03-16
+dailies:
+  active:
+    - id: daily-001
+      status: active
+      title: Read the inbox with fresh eyes
+      raw_text: Scan for anything urgent before settling into the main queue.
+      links: []
+      notes:
+        - Keep this visible on the Daily screen.
+      hit_dates:
+        - 2026-03-17
+        - 2026-03-16
+    - id: daily-002
+      status: active
+      title: Leave space for one strange idea
+      raw_text: The project should stay a little weird and fun.
+      links: []
+      notes: []
+      hit_dates:
+        - 2026-03-07
+  later:
+    - id: daily-101
+      status: later
+      title: Revisit trend summaries
+      raw_text: Later versions may surface patterns across tasks and daily logs.
+      links: []
+      notes:
+        - Not for phase 3.
+      hit_dates: []
+session_state:
+  active_work:
+    - Wiring the render loop against controller projections.
+  blocked:
+    - None.
+  daily_logs:
+    - date: 2026-03-17
+      done:
+        - Added a generic screenshot fixture.
+      in_progress:
+        - Polishing the terminal views.
+      blocked: []
+      tomorrow:
+        - Capture README screenshots.
+decisions:
+  - id: ui-detail-cycle
+    date: 2026-03-17
+    title: Cycle detail panes with one key
+    settings:
+      detail_key: d
+      states:
+        - closed
+        - item
+        - decisions
+    summary:
+      - One key is enough for the first version.
+      - Item details and global decisions should share the same right pane.
+    startup_flow_notes:
+      - Mention the key in the footer.
+  - id: reload-policy
+    date: 2026-03-17
+    title: Keep reload checks cheap
+    settings:
+      first_gate: modified_timestamp
+      second_gate: blake3
+    summary:
+      - Skip reparsing when the file timestamp and checksum show no meaningful change.
+    startup_flow_notes:
+      - Manual reload should still refresh the screen state.
