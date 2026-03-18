@@ -49,6 +49,7 @@ pub struct Controller {
     today: NaiveDate,
     pub screen: Screen,
     pub detail_mode: DetailMode,
+    derived: Derived,
     selections: Selections,
 }
 
@@ -61,22 +62,40 @@ struct Selections {
     daily: usize,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Derived {
+    p1_order: Vec<usize>,
+    top3_order: Vec<usize>,
+    daily: Vec<DailyDerived>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct DailyDerived {
+    bucket: DailyBucket,
+    active: bool,
+    task_index: usize,
+    last_hit: Option<NaiveDate>,
+    stale: bool,
+}
+
 impl Controller {
     pub fn new(snapshot: Snapshot, today: NaiveDate) -> Self {
+        let derived = Derived::build(&snapshot, today);
         let mut controller = Self {
             snapshot,
             today,
             screen: Screen::Top3,
             detail_mode: DetailMode::Closed,
+            derived,
             selections: Selections::default(),
         };
-        controller.clamp_all();
+        controller.repair_all_selections();
         controller
     }
 
     pub fn set_screen(&mut self, screen: Screen) {
         self.screen = screen;
-        self.clamp(screen);
+        self.repair_selection(screen);
     }
 
     pub fn cycle_detail_mode(&mut self) {
@@ -99,13 +118,20 @@ impl Controller {
         let len = self.entry_count();
         if len > 0 {
             let selection = self.selections.at_mut(self.screen);
-            *selection = (*selection + 1).min(len - 1);
+            *selection = (*selection + 1) % len;
         }
     }
 
     pub fn select_previous(&mut self) {
-        let selection = self.selections.at_mut(self.screen);
-        *selection = selection.saturating_sub(1);
+        let len = self.entry_count();
+        if len > 0 {
+            let selection = self.selections.at_mut(self.screen);
+            *selection = if *selection == 0 {
+                len - 1
+            } else {
+                *selection - 1
+            };
+        }
     }
 
     pub fn select_first(&mut self) {
@@ -117,63 +143,37 @@ impl Controller {
         *self.selections.at_mut(self.screen) = len.saturating_sub(1);
     }
 
-    pub fn top_three(&self) -> Vec<&P1Task> {
-        let mut tasks: Vec<_> = self.snapshot.tasks.p1.iter().collect();
-        tasks.sort_by_key(|task| task.rank);
-        tasks.truncate(TOP_THREE_LIMIT);
-        tasks
-    }
-
-    pub fn p1(&self) -> Vec<&P1Task> {
-        let mut tasks: Vec<_> = self.snapshot.tasks.p1.iter().collect();
-        tasks.sort_by_key(|task| task.rank);
-        tasks
-    }
-
-    pub fn p2(&self) -> Vec<&P2Task> {
-        let mut tasks: Vec<_> = self.snapshot.tasks.p2.iter().collect();
-        tasks.sort_by_key(|task| task.source_order);
-        tasks
-    }
-
-    pub fn p3(&self) -> Vec<&P3Task> {
-        let mut tasks: Vec<_> = self.snapshot.tasks.p3.iter().collect();
-        tasks.sort_by_key(|task| task.source_order);
-        tasks
-    }
-
-    pub fn daily(&self) -> Vec<DailyEntry<'_>> {
-        self.snapshot
-            .dailies
-            .active
+    pub fn top_three(&self) -> impl Iterator<Item = &P1Task> + '_ {
+        self.derived
+            .top3_order
             .iter()
-            .map(|task| self.daily_entry(DailyBucket::Active, task))
-            .chain(
-                self.snapshot
-                    .dailies
-                    .later
-                    .iter()
-                    .map(|task| self.daily_entry(DailyBucket::Later, task)),
-            )
-            .collect()
+            .filter_map(|&index| self.snapshot.tasks.p1.get(index))
+    }
+
+    pub fn p1(&self) -> impl Iterator<Item = &P1Task> + '_ {
+        self.derived
+            .p1_order
+            .iter()
+            .filter_map(|&index| self.snapshot.tasks.p1.get(index))
+    }
+
+    pub fn p2(&self) -> &[P2Task] {
+        &self.snapshot.tasks.p2
+    }
+
+    pub fn p3(&self) -> &[P3Task] {
+        &self.snapshot.tasks.p3
+    }
+
+    pub fn daily(&self) -> impl Iterator<Item = DailyEntry<'_>> + '_ {
+        self.derived
+            .daily
+            .iter()
+            .filter_map(|entry| self.daily_from(entry))
     }
 
     pub fn selected(&self) -> Option<Selected<'_>> {
-        match self.screen {
-            Screen::Top3 => self
-                .top_three()
-                .get(self.selection())
-                .copied()
-                .map(Selected::P1),
-            Screen::P1 => self.p1().get(self.selection()).copied().map(Selected::P1),
-            Screen::P2 => self.p2().get(self.selection()).copied().map(Selected::P2),
-            Screen::P3 => self.p3().get(self.selection()).copied().map(Selected::P3),
-            Screen::Daily => self
-                .daily()
-                .get(self.selection())
-                .copied()
-                .map(Selected::Daily),
-        }
+        self.entry_at(self.screen, self.selection())
     }
 
     pub fn decisions(&self) -> &[Decision] {
@@ -190,92 +190,119 @@ impl Controller {
         };
 
         self.snapshot = snapshot;
+        self.derived = Derived::build(&self.snapshot, self.today);
         self.restore(Screen::Top3, saved.top3.as_deref());
         self.restore(Screen::P1, saved.p1.as_deref());
         self.restore(Screen::P2, saved.p2.as_deref());
         self.restore(Screen::P3, saved.p3.as_deref());
         self.restore(Screen::Daily, saved.daily.as_deref());
-        self.clamp(self.screen);
+        self.repair_selection(self.screen);
     }
 
-    fn daily_entry<'a>(&self, bucket: DailyBucket, task: &'a DailyTask) -> DailyEntry<'a> {
-        let last_hit = task.hit_dates.iter().copied().max();
-        let stale = last_hit
-            .map(|last_hit| (self.today - last_hit).num_days() > DAILY_STALE_DAYS)
-            .unwrap_or(true);
-
-        DailyEntry {
-            bucket,
-            task,
-            last_hit,
-            stale,
+    fn entry_at(&self, screen: Screen, index: usize) -> Option<Selected<'_>> {
+        match screen {
+            Screen::Top3 => self.top_three_at(index).map(Selected::P1),
+            Screen::P1 => self.p1_at(index).map(Selected::P1),
+            Screen::P2 => self.p2().get(index).map(Selected::P2),
+            Screen::P3 => self.p3().get(index).map(Selected::P3),
+            Screen::Daily => self.daily_at(index).map(Selected::Daily),
         }
+    }
+
+    fn top_three_at(&self, index: usize) -> Option<&P1Task> {
+        self.derived
+            .top3_order
+            .get(index)
+            .and_then(|&task_index| self.snapshot.tasks.p1.get(task_index))
+    }
+
+    fn p1_at(&self, index: usize) -> Option<&P1Task> {
+        self.derived
+            .p1_order
+            .get(index)
+            .and_then(|&task_index| self.snapshot.tasks.p1.get(task_index))
+    }
+
+    fn daily_at(&self, index: usize) -> Option<DailyEntry<'_>> {
+        self.derived
+            .daily
+            .get(index)
+            .and_then(|entry| self.daily_from(entry))
+    }
+
+    fn daily_from(&self, entry: &DailyDerived) -> Option<DailyEntry<'_>> {
+        let task = if entry.active {
+            self.snapshot.dailies.active.get(entry.task_index)
+        } else {
+            self.snapshot.dailies.later.get(entry.task_index)
+        }?;
+
+        Some(DailyEntry {
+            bucket: entry.bucket,
+            task,
+            last_hit: entry.last_hit,
+            stale: entry.stale,
+        })
     }
 
     fn len_for(&self, screen: Screen) -> usize {
         match screen {
-            Screen::Top3 => self.top_three().len(),
-            Screen::P1 => self.snapshot.tasks.p1.len(),
+            Screen::Top3 => self.derived.top3_order.len(),
+            Screen::P1 => self.derived.p1_order.len(),
             Screen::P2 => self.snapshot.tasks.p2.len(),
             Screen::P3 => self.snapshot.tasks.p3.len(),
-            Screen::Daily => self.snapshot.dailies.active.len() + self.snapshot.dailies.later.len(),
+            Screen::Daily => self.derived.daily.len(),
         }
     }
 
     fn id_for(&self, screen: Screen) -> Option<String> {
-        match screen {
-            Screen::Top3 => self
-                .top_three()
-                .get(*self.selections.at(Screen::Top3))
-                .map(|task| task.id.clone()),
-            Screen::P1 => self
-                .p1()
-                .get(*self.selections.at(Screen::P1))
-                .map(|task| task.id.clone()),
-            Screen::P2 => self
-                .p2()
-                .get(*self.selections.at(Screen::P2))
-                .map(|task| task.id.clone()),
-            Screen::P3 => self
-                .p3()
-                .get(*self.selections.at(Screen::P3))
-                .map(|task| task.id.clone()),
-            Screen::Daily => self
-                .daily()
-                .get(*self.selections.at(Screen::Daily))
-                .map(|entry| entry.task.id.clone()),
+        match self.entry_at(screen, *self.selections.at(screen)) {
+            Some(Selected::P1(task)) => Some(task.id.clone()),
+            Some(Selected::P2(task)) => Some(task.id.clone()),
+            Some(Selected::P3(task)) => Some(task.id.clone()),
+            Some(Selected::Daily(entry)) => Some(entry.task.id.clone()),
+            None => None,
         }
     }
 
     fn restore(&mut self, screen: Screen, saved_id: Option<&str>) {
-        let restored = saved_id.and_then(|saved_id| self.index_for(screen, saved_id));
-
-        if let Some(index) = restored {
-            *self.selections.at_mut(screen) = index;
-        } else {
-            self.clamp(screen);
+        if let Some(saved_id) = saved_id {
+            if let Some(index) = self.index_for(screen, saved_id) {
+                *self.selections.at_mut(screen) = index;
+                return;
+            }
         }
+
+        self.repair_selection(screen);
     }
 
     fn index_for(&self, screen: Screen, id: &str) -> Option<usize> {
-        match screen {
-            Screen::Top3 => self.top_three().iter().position(|task| task.id == id),
-            Screen::P1 => self.p1().iter().position(|task| task.id == id),
-            Screen::P2 => self.p2().iter().position(|task| task.id == id),
-            Screen::P3 => self.p3().iter().position(|task| task.id == id),
-            Screen::Daily => self.daily().iter().position(|entry| entry.task.id == id),
-        }
+        let len = self.len_for(screen);
+        (0..len).position(|index| match self.entry_at(screen, index) {
+            Some(Selected::P1(task)) => task.id == id,
+            Some(Selected::P2(task)) => task.id == id,
+            Some(Selected::P3(task)) => task.id == id,
+            Some(Selected::Daily(entry)) => entry.task.id == id,
+            None => false,
+        })
     }
 
-    fn clamp_all(&mut self) {
-        self.clamp(Screen::Top3);
-        self.clamp(Screen::P1);
-        self.clamp(Screen::P2);
-        self.clamp(Screen::P3);
-        self.clamp(Screen::Daily);
+    fn repair_all_selections(&mut self) {
+        self.repair_selection(Screen::Top3);
+        self.repair_selection(Screen::P1);
+        self.repair_selection(Screen::P2);
+        self.repair_selection(Screen::P3);
+        self.repair_selection(Screen::Daily);
     }
 
-    fn clamp(&mut self, screen: Screen) {
+    /// Repair a stored selection after the underlying data changes.
+    ///
+    /// Example: the user had item index `7` selected, then a reload replaces the
+    /// snapshot and that view now has only `3` rows. The navigation behavior
+    /// should still wrap during normal movement, but after a reload we need to
+    /// bring the stored index back into bounds so the future UI can safely ask
+    /// for the selected row without defending against invalid state.
+    fn repair_selection(&mut self, screen: Screen) {
         let len = self.len_for(screen);
         let selection = self.selections.at_mut(screen);
         *selection = if len == 0 {
@@ -308,6 +335,64 @@ impl Selections {
     }
 }
 
+impl Derived {
+    fn build(snapshot: &Snapshot, today: NaiveDate) -> Self {
+        let mut p1_order: Vec<_> = (0..snapshot.tasks.p1.len()).collect();
+        p1_order.sort_by_key(|&index| snapshot.tasks.p1[index].rank);
+
+        let top3_order = p1_order.iter().take(TOP_THREE_LIMIT).copied().collect();
+
+        let daily = snapshot
+            .dailies
+            .active
+            .iter()
+            .enumerate()
+            .map(|(task_index, task)| {
+                DailyDerived::new(DailyBucket::Active, true, task_index, task, today)
+            })
+            .chain(
+                snapshot
+                    .dailies
+                    .later
+                    .iter()
+                    .enumerate()
+                    .map(|(task_index, task)| {
+                        DailyDerived::new(DailyBucket::Later, false, task_index, task, today)
+                    }),
+            )
+            .collect();
+
+        Self {
+            p1_order,
+            top3_order,
+            daily,
+        }
+    }
+}
+
+impl DailyDerived {
+    fn new(
+        bucket: DailyBucket,
+        active: bool,
+        task_index: usize,
+        task: &DailyTask,
+        today: NaiveDate,
+    ) -> Self {
+        let last_hit = task.hit_dates.iter().copied().max();
+        let stale = last_hit
+            .map(|last_hit| (today - last_hit).num_days() > DAILY_STALE_DAYS)
+            .unwrap_or(true);
+
+        Self {
+            bucket,
+            active,
+            task_index,
+            last_hit,
+            stale,
+        }
+    }
+}
+
 #[derive(Default)]
 struct SavedSelections {
     top3: Option<String>,
@@ -321,6 +406,12 @@ struct SavedSelections {
 mod tests {
     use super::*;
     use crate::model::Snapshot;
+
+    fn test_controller() -> Controller {
+        let snapshot = Snapshot::from_yaml_str(FIXTURE).expect("controller fixture should parse");
+        let today = NaiveDate::from_ymd_opt(2026, 3, 17).unwrap();
+        Controller::new(snapshot, today)
+    }
 
     const FIXTURE: &str = r#"
 schema_version: 1
@@ -429,22 +520,41 @@ decisions:
       - One startup note.
 "#;
 
-    fn test_controller() -> Controller {
-        let snapshot = Snapshot::from_yaml_str(FIXTURE).expect("controller fixture should parse");
-        let today = NaiveDate::from_ymd_opt(2026, 3, 17).unwrap();
-        Controller::new(snapshot, today)
-    }
-
     #[test]
-    fn derives_top_three_from_rank_order() {
+    fn derives_top_three_from_rank_order_once() {
         let controller = test_controller();
         let ids: Vec<_> = controller
             .top_three()
-            .iter()
             .map(|task| task.id.as_str())
             .collect();
 
         assert_eq!(ids, vec!["p1-001", "p1-002", "p1-003"]);
+    }
+
+    #[test]
+    fn exposes_p1_in_rank_order() {
+        let controller = test_controller();
+        let ids: Vec<_> = controller.p1().map(|task| task.id.as_str()).collect();
+
+        assert_eq!(ids, vec!["p1-001", "p1-002", "p1-003", "p1-004"]);
+    }
+
+    #[test]
+    fn keeps_p2_and_p3_in_source_order() {
+        let controller = test_controller();
+        let p2_ids: Vec<_> = controller
+            .p2()
+            .iter()
+            .map(|task| task.id.as_str())
+            .collect();
+        let p3_ids: Vec<_> = controller
+            .p3()
+            .iter()
+            .map(|task| task.id.as_str())
+            .collect();
+
+        assert_eq!(p2_ids, vec!["p2-002", "p2-001"]);
+        assert_eq!(p3_ids, vec!["p3-002", "p3-001"]);
     }
 
     #[test]
@@ -464,22 +574,22 @@ decisions:
     }
 
     #[test]
-    fn clamps_selection_movement_to_bounds() {
+    fn wraps_selection_movement() {
         let mut controller = test_controller();
 
         controller.set_screen(Screen::P2);
         controller.select_previous();
-        assert_eq!(controller.selection(), 0);
-
-        controller.select_next();
-        controller.select_next();
         assert_eq!(controller.selection(), 1);
 
-        controller.select_first();
+        controller.select_next();
         assert_eq!(controller.selection(), 0);
 
         controller.select_last();
-        assert_eq!(controller.selection(), 1);
+        controller.select_next();
+        assert_eq!(controller.selection(), 0);
+
+        controller.select_first();
+        assert_eq!(controller.selection(), 0);
     }
 
     #[test]
@@ -496,9 +606,9 @@ decisions:
     }
 
     #[test]
-    fn derives_daily_last_hit_and_stale_state() {
+    fn derives_daily_last_hit_and_stale_state_once() {
         let controller = test_controller();
-        let daily = controller.daily();
+        let daily: Vec<_> = controller.daily().collect();
 
         assert_eq!(daily.len(), 3);
         assert_eq!(daily[0].bucket, DailyBucket::Active);
@@ -525,7 +635,7 @@ decisions:
 
         match controller.selected() {
             Some(Selected::P1(task)) => assert_eq!(task.id, "p1-001"),
-            _ => panic!("expected top-3 selection"),
+            _ => panic!("expected top-three selection"),
         }
 
         controller.set_screen(Screen::Daily);
@@ -560,7 +670,7 @@ decisions:
 
         assert_eq!(controller.selection(), 1);
         match controller.selected() {
-            Some(Selected::P2(task)) => assert_eq!(task.id, "p2-002"),
+            Some(Selected::P2(task)) => assert_eq!(task.id, "p2-001"),
             _ => panic!("expected p2 selection"),
         }
     }
