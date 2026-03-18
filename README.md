@@ -20,6 +20,8 @@
   <strong>LearningComputer</strong> is building toward a small but sharp task system:
   a read-only task viewer first, then a CRUD app, then something agent-pluggable and
   trend-aware later.
+
+  <sub>In 0079 of 機動戦Gundams's Universal Century, the RX-78-2 Gundam is equipped with a learning computer that accumulates combat data to improve performance over time.</sub>
 </p>
 
 > [!NOTE]
