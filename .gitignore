@@ -1,0 +1,8 @@
+target/
+.DS_Store
+*.swp
+*.swo
+tasks.yaml
+tasks.yml
+tasks.db
+data/tasks.yaml
