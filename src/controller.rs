@@ -181,21 +181,21 @@ impl Controller {
     }
 
     pub fn replace_snapshot(&mut self, snapshot: Snapshot) {
-        let saved = SavedSelections {
-            top3: self.id_for(Screen::Top3),
-            p1: self.id_for(Screen::P1),
-            p2: self.id_for(Screen::P2),
-            p3: self.id_for(Screen::P3),
-            daily: self.id_for(Screen::Daily),
+        let restore_state = SelectionRestoreState {
+            top3_selected_id: self.id_for(Screen::Top3),
+            p1_selected_id: self.id_for(Screen::P1),
+            p2_selected_id: self.id_for(Screen::P2),
+            p3_selected_id: self.id_for(Screen::P3),
+            daily_selected_id: self.id_for(Screen::Daily),
         };
 
         self.snapshot = snapshot;
         self.derived = Derived::build(&self.snapshot, self.today);
-        self.restore(Screen::Top3, saved.top3.as_deref());
-        self.restore(Screen::P1, saved.p1.as_deref());
-        self.restore(Screen::P2, saved.p2.as_deref());
-        self.restore(Screen::P3, saved.p3.as_deref());
-        self.restore(Screen::Daily, saved.daily.as_deref());
+        self.restore(Screen::Top3, restore_state.top3_selected_id.as_deref());
+        self.restore(Screen::P1, restore_state.p1_selected_id.as_deref());
+        self.restore(Screen::P2, restore_state.p2_selected_id.as_deref());
+        self.restore(Screen::P3, restore_state.p3_selected_id.as_deref());
+        self.restore(Screen::Daily, restore_state.daily_selected_id.as_deref());
         self.repair_selection(self.screen);
     }
 
@@ -255,35 +255,31 @@ impl Controller {
         }
     }
 
+    /// Capture the currently selected item's stable id before replacing the
+    /// snapshot.
+    ///
+    /// Selection indices are only positions within the current derived lists.
+    /// A reload can insert, remove, or reorder items, which makes the old
+    /// numeric index point at the wrong logical item. We clone the selected id
+    /// here so `restore` can find the same logical item in the new snapshot
+    /// after replacement.
     fn id_for(&self, screen: Screen) -> Option<String> {
-        match self.entry_at(screen, *self.selections.at(screen)) {
-            Some(Selected::P1(task)) => Some(task.id.clone()),
-            Some(Selected::P2(task)) => Some(task.id.clone()),
-            Some(Selected::P3(task)) => Some(task.id.clone()),
-            Some(Selected::Daily(entry)) => Some(entry.task.id.clone()),
-            None => None,
-        }
+        self.entry_at(screen, *self.selections.at(screen))
+            .map(selected_id)
     }
 
     fn restore(&mut self, screen: Screen, saved_id: Option<&str>) {
-        if let Some(saved_id) = saved_id {
-            if let Some(index) = self.index_for(screen, saved_id) {
-                *self.selections.at_mut(screen) = index;
-                return;
-            }
+        match saved_id.and_then(|saved_id| self.index_for(screen, saved_id)) {
+            Some(index) => *self.selections.at_mut(screen) = index,
+            None => self.repair_selection(screen),
         }
-
-        self.repair_selection(screen);
     }
 
     fn index_for(&self, screen: Screen, id: &str) -> Option<usize> {
         let len = self.len_for(screen);
-        (0..len).position(|index| match self.entry_at(screen, index) {
-            Some(Selected::P1(task)) => task.id == id,
-            Some(Selected::P2(task)) => task.id == id,
-            Some(Selected::P3(task)) => task.id == id,
-            Some(Selected::Daily(entry)) => entry.task.id == id,
-            None => false,
+        (0..len).position(|index| {
+            self.entry_at(screen, index)
+                .is_some_and(|selected| selected_id(selected) == id)
         })
     }
 
@@ -393,13 +389,22 @@ impl DailyDerived {
     }
 }
 
+fn selected_id(selected: Selected<'_>) -> String {
+    match selected {
+        Selected::P1(task) => task.id.clone(),
+        Selected::P2(task) => task.id.clone(),
+        Selected::P3(task) => task.id.clone(),
+        Selected::Daily(entry) => entry.task.id.clone(),
+    }
+}
+
 #[derive(Default)]
-struct SavedSelections {
-    top3: Option<String>,
-    p1: Option<String>,
-    p2: Option<String>,
-    p3: Option<String>,
-    daily: Option<String>,
+struct SelectionRestoreState {
+    top3_selected_id: Option<String>,
+    p1_selected_id: Option<String>,
+    p2_selected_id: Option<String>,
+    p3_selected_id: Option<String>,
+    daily_selected_id: Option<String>,
 }
 
 #[cfg(test)]
