@@ -23,7 +23,6 @@ use crate::loader::{read_snapshot, ReadOutcome, SourceState};
 
 const DEFAULT_TASKS_PATHS: [&str; 2] = ["data/tasks.yml", "data/tasks.yaml"];
 const REFRESH_INTERVAL: Duration = Duration::from_millis(750);
-const PAGE_STEP: usize = 8;
 
 const fn gundam_background() -> Color {
     Color::Rgb(41, 44, 51)
@@ -209,18 +208,6 @@ impl App {
             }
             KeyCode::Char('G') | KeyCode::End => {
                 self.controller.select_last();
-                Ok(false)
-            }
-            KeyCode::PageDown => {
-                for _ in 0..PAGE_STEP {
-                    self.controller.select_next();
-                }
-                Ok(false)
-            }
-            KeyCode::PageUp => {
-                for _ in 0..PAGE_STEP {
-                    self.controller.select_previous();
-                }
                 Ok(false)
             }
             KeyCode::Char('h') | KeyCode::Left if self.controller.screen == Screen::Done => {
@@ -607,7 +594,6 @@ fn render_footer(frame: &mut Frame<'_>, area: Rect, app: &App) {
             Style::default().fg(gundam_text()).bg(gundam_blue()),
         ),
         Span::raw("first/last  "),
-        Span::raw("PgUp/PgDn move faster"),
     ]))
     .style(Style::default().bg(gundam_background()).fg(gundam_text()))
     .block(
