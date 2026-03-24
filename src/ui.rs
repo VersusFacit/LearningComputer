@@ -17,11 +17,11 @@ use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Tabs, Wrap};
 use ratatui::{Frame, Terminal};
 
-use crate::controller::{Controller, DailyEntry, DetailMode, Screen, Selected};
+use crate::controller::{Controller, DailyEntry, DetailMode, DonePane, Screen, Selected};
 use crate::error::AppError;
 use crate::loader::{read_snapshot, ReadOutcome, SourceState};
 
-const DEFAULT_TASKS_PATH: &str = "data/tasks.yaml";
+const DEFAULT_TASKS_PATHS: [&str; 2] = ["data/tasks.yml", "data/tasks.yaml"];
 const REFRESH_INTERVAL: Duration = Duration::from_millis(750);
 const PAGE_STEP: usize = 8;
 
@@ -49,6 +49,10 @@ const fn gundam_blue() -> Color {
     Color::Rgb(57, 109, 193)
 }
 
+const fn gundam_info() -> Color {
+    Color::Rgb(147, 193, 219)
+}
+
 const fn gundam_yellow() -> Color {
     Color::Rgb(242, 196, 55)
 }
@@ -73,12 +77,24 @@ fn panel_block<'a>(title: &'a str) -> Block<'a> {
         .border_style(Style::default().fg(gundam_border()))
 }
 
-pub fn resolve_tasks_path() -> PathBuf {
+pub fn resolve_tasks_path() -> Result<PathBuf, crate::error::LoadError> {
     env::args_os()
         .nth(1)
         .map(PathBuf::from)
         .or_else(|| env::var_os("LEARNING_COMPUTER_TASKS_FILE").map(PathBuf::from))
-        .unwrap_or_else(|| PathBuf::from(DEFAULT_TASKS_PATH))
+        .map(Ok)
+        .unwrap_or_else(|| {
+            resolve_default_tasks_path(Path::new("."))
+                .ok_or(crate::error::LoadError::MissingDefaultPaths)
+        })
+}
+
+fn resolve_default_tasks_path(base: &Path) -> Option<PathBuf> {
+    DEFAULT_TASKS_PATHS
+        .iter()
+        .map(|candidate| (PathBuf::from(candidate), base.join(candidate)))
+        .find(|(_, absolute)| absolute.is_file())
+        .map(|(relative, _)| relative)
 }
 
 pub fn run(path: PathBuf) -> Result<(), AppError> {
@@ -175,6 +191,10 @@ impl App {
                 self.controller.set_screen(Screen::Decisions);
                 Ok(false)
             }
+            KeyCode::Char('6') => {
+                self.controller.set_screen(Screen::Done);
+                Ok(false)
+            }
             KeyCode::Char('j') | KeyCode::Down => {
                 self.controller.select_next();
                 Ok(false)
@@ -203,8 +223,30 @@ impl App {
                 }
                 Ok(false)
             }
+            KeyCode::Char('h') | KeyCode::Left if self.controller.screen == Screen::Done => {
+                self.controller.focus_previous_done_pane();
+                Ok(false)
+            }
+            KeyCode::Char('l') | KeyCode::Right if self.controller.screen == Screen::Done => {
+                self.controller.focus_next_done_pane();
+                Ok(false)
+            }
             KeyCode::Char('d') => {
                 self.controller.cycle_detail_mode();
+                Ok(false)
+            }
+            KeyCode::Char('D') => {
+                if let Some(show_done) = self.controller.toggle_done_visibility() {
+                    let state = if show_done { "showing" } else { "hiding" };
+                    self.status = Status {
+                        tone: Tone::Neutral,
+                        text: format!(
+                            "{state} done in {} {}",
+                            screen_label(self.controller.screen),
+                            timestamp_label()
+                        ),
+                    };
+                }
                 Ok(false)
             }
             KeyCode::Char('r') => {
@@ -352,10 +394,18 @@ fn render_header(frame: &mut Frame<'_>, area: Rect, app: &App) {
 }
 
 fn render_tabs(frame: &mut Frame<'_>, area: Rect, app: &App) {
-    let titles = ["0 Top3", "1 P1", "2 P2", "3 P3", "4 Daily", "5 Decisions"]
-        .into_iter()
-        .map(Line::from)
-        .collect::<Vec<_>>();
+    let titles = [
+        "0 Top3",
+        "1 P1",
+        "2 P2",
+        "3 P3",
+        "4 Daily",
+        "5 Decisions",
+        "6 Done",
+    ]
+    .into_iter()
+    .map(Line::from)
+    .collect::<Vec<_>>();
 
     let selected = match app.controller.screen {
         Screen::Top3 => 0,
@@ -364,6 +414,7 @@ fn render_tabs(frame: &mut Frame<'_>, area: Rect, app: &App) {
         Screen::P3 => 3,
         Screen::Daily => 4,
         Screen::Decisions => 5,
+        Screen::Done => 6,
     };
 
     let tabs = Tabs::new(titles)
@@ -382,6 +433,11 @@ fn render_tabs(frame: &mut Frame<'_>, area: Rect, app: &App) {
 }
 
 fn render_content(frame: &mut Frame<'_>, area: Rect, app: &App) {
+    if app.controller.screen == Screen::Done {
+        render_done_content(frame, area, app);
+        return;
+    }
+
     let segments = if app.controller.detail_mode == DetailMode::Closed {
         Layout::default()
             .direction(Direction::Horizontal)
@@ -407,17 +463,14 @@ fn render_list(frame: &mut Frame<'_>, area: Rect, app: &App) {
             .controller
             .top_three()
             .map(|task| {
+                let title_style = task_title_style(&task.status);
+                let accent_style = task_accent_style(&task.status);
+                let status_style = task_status_style(&task.status);
                 ListItem::new(Line::from(vec![
-                    Span::styled(
-                        format!("{:>4} ", format!("#{}", task.rank)),
-                        Style::default().fg(gundam_yellow()),
-                    ),
-                    Span::styled(task.title.as_str(), Style::default().fg(gundam_text())),
+                    Span::styled(format!("{:>4} ", format!("#{}", task.rank)), accent_style),
+                    Span::styled(task.title.as_str(), title_style),
                     Span::raw(" "),
-                    Span::styled(
-                        label_for_task_status(&task.status),
-                        Style::default().fg(gundam_blue()),
-                    ),
+                    Span::styled(label_for_task_status(&task.status), status_style),
                 ]))
             })
             .collect(),
@@ -425,17 +478,14 @@ fn render_list(frame: &mut Frame<'_>, area: Rect, app: &App) {
             .controller
             .p1()
             .map(|task| {
+                let title_style = task_title_style(&task.status);
+                let accent_style = task_accent_style(&task.status);
+                let status_style = task_status_style(&task.status);
                 ListItem::new(Line::from(vec![
-                    Span::styled(
-                        format!("{:>4} ", format!("#{}", task.rank)),
-                        Style::default().fg(gundam_yellow()),
-                    ),
-                    Span::styled(task.title.as_str(), Style::default().fg(gundam_text())),
+                    Span::styled(format!("{:>4} ", format!("#{}", task.rank)), accent_style),
+                    Span::styled(task.title.as_str(), title_style),
                     Span::raw(" "),
-                    Span::styled(
-                        label_for_task_status(&task.status),
-                        Style::default().fg(gundam_blue()),
-                    ),
+                    Span::styled(label_for_task_status(&task.status), status_style),
                 ]))
             })
             .collect(),
@@ -443,9 +493,11 @@ fn render_list(frame: &mut Frame<'_>, area: Rect, app: &App) {
             .controller
             .p2()
             .map(|task| {
+                let title_style = task_title_style(&task.status);
+                let accent_style = task_accent_style(&task.status);
                 ListItem::new(Line::from(vec![
-                    Span::styled("* ", Style::default().fg(gundam_yellow())),
-                    Span::styled(task.title.as_str(), Style::default().fg(gundam_text())),
+                    Span::styled("* ", accent_style),
+                    Span::styled(task.title.as_str(), title_style),
                 ]))
             })
             .collect(),
@@ -453,14 +505,14 @@ fn render_list(frame: &mut Frame<'_>, area: Rect, app: &App) {
             .controller
             .p3()
             .map(|task| {
+                let title_style = task_title_style(&task.status);
+                let accent_style = task_accent_style(&task.status);
+                let status_style = task_status_style(&task.status);
                 ListItem::new(Line::from(vec![
-                    Span::styled("* ", Style::default().fg(gundam_yellow())),
-                    Span::styled(task.title.as_str(), Style::default().fg(gundam_text())),
+                    Span::styled("* ", accent_style),
+                    Span::styled(task.title.as_str(), title_style),
                     Span::raw(" "),
-                    Span::styled(
-                        label_for_task_status(&task.status),
-                        Style::default().fg(gundam_blue()),
-                    ),
+                    Span::styled(label_for_task_status(&task.status), status_style),
                 ]))
             })
             .collect(),
@@ -475,6 +527,7 @@ fn render_list(frame: &mut Frame<'_>, area: Rect, app: &App) {
             .iter()
             .map(decision_list_item)
             .collect(),
+        Screen::Done => unreachable!("done dashboard is rendered separately"),
     };
 
     let title = match app.controller.screen {
@@ -484,6 +537,7 @@ fn render_list(frame: &mut Frame<'_>, area: Rect, app: &App) {
         Screen::P3 => " P3 ",
         Screen::Daily => " Daily ",
         Screen::Decisions => " Decisions ",
+        Screen::Done => unreachable!("done dashboard is rendered separately"),
     };
 
     let list = List::new(items)
@@ -522,6 +576,8 @@ fn render_footer(frame: &mut Frame<'_>, area: Rect, app: &App) {
     };
 
     let footer = Paragraph::new(Line::from(vec![
+        Span::styled(" 6 ", Style::default().fg(gundam_text()).bg(gundam_blue())),
+        Span::raw("done  "),
         Span::styled(" q ", Style::default().fg(gundam_text()).bg(gundam_red())),
         Span::raw("quit  "),
         Span::styled(
@@ -534,11 +590,18 @@ fn render_footer(frame: &mut Frame<'_>, area: Rect, app: &App) {
             Style::default().fg(gundam_text()).bg(gundam_yellow()),
         ),
         Span::raw(format!("detail:{detail}  ")),
+        Span::styled(" D ", Style::default().fg(gundam_text()).bg(gundam_panel())),
+        Span::raw("toggle done  "),
         Span::styled(
             " j/k ",
             Style::default().fg(gundam_text()).bg(gundam_blue()),
         ),
         Span::raw("move  "),
+        Span::styled(
+            " h/l ",
+            Style::default().fg(gundam_text()).bg(gundam_blue()),
+        ),
+        Span::raw("pane  "),
         Span::styled(
             " g/G ",
             Style::default().fg(gundam_text()).bg(gundam_blue()),
@@ -555,6 +618,171 @@ fn render_footer(frame: &mut Frame<'_>, area: Rect, app: &App) {
     );
 
     frame.render_widget(footer, area);
+}
+
+fn render_done_content(frame: &mut Frame<'_>, area: Rect, app: &App) {
+    if app.controller.detail_mode == DetailMode::Closed {
+        render_done_dashboard(frame, area, app);
+    } else {
+        let segments = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+            .split(area);
+
+        render_active_done_pane(frame, segments[0], app);
+        render_detail(frame, segments[1], app);
+    }
+}
+
+fn render_done_dashboard(frame: &mut Frame<'_>, area: Rect, app: &App) {
+    let panes = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage(34),
+            Constraint::Percentage(33),
+            Constraint::Percentage(33),
+        ])
+        .split(area);
+
+    render_done_pane(
+        frame,
+        panes[0],
+        " Done P1 ",
+        done_p1_items(app),
+        app.controller.done_selection(DonePane::P1),
+        app.controller.done_pane() == DonePane::P1,
+    );
+    render_done_pane(
+        frame,
+        panes[1],
+        " Done P2 ",
+        done_p2_items(app),
+        app.controller.done_selection(DonePane::P2),
+        app.controller.done_pane() == DonePane::P2,
+    );
+    render_done_pane(
+        frame,
+        panes[2],
+        " Done P3 ",
+        done_p3_items(app),
+        app.controller.done_selection(DonePane::P3),
+        app.controller.done_pane() == DonePane::P3,
+    );
+}
+
+fn render_active_done_pane(frame: &mut Frame<'_>, area: Rect, app: &App) {
+    match app.controller.done_pane() {
+        DonePane::P1 => render_done_pane(
+            frame,
+            area,
+            " Done P1 ",
+            done_p1_items(app),
+            app.controller.done_selection(DonePane::P1),
+            true,
+        ),
+        DonePane::P2 => render_done_pane(
+            frame,
+            area,
+            " Done P2 ",
+            done_p2_items(app),
+            app.controller.done_selection(DonePane::P2),
+            true,
+        ),
+        DonePane::P3 => render_done_pane(
+            frame,
+            area,
+            " Done P3 ",
+            done_p3_items(app),
+            app.controller.done_selection(DonePane::P3),
+            true,
+        ),
+    }
+}
+
+fn render_done_pane(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    title: &str,
+    items: Vec<ListItem<'_>>,
+    selection: usize,
+    active: bool,
+) {
+    let has_items = !items.is_empty();
+    let border_style = if active {
+        Style::default().fg(gundam_info())
+    } else {
+        Style::default().fg(gundam_border())
+    };
+
+    let highlight_style = if active {
+        Style::default()
+            .bg(gundam_panel())
+            .fg(gundam_text())
+            .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+    } else {
+        Style::default().bg(gundam_black()).fg(gundam_muted())
+    };
+
+    let active_title = if active {
+        format!("{title}<")
+    } else {
+        title.to_string()
+    };
+
+    let list = List::new(items)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(active_title)
+                .style(Style::default().bg(gundam_panel()).fg(gundam_text()))
+                .border_style(border_style),
+        )
+        .style(Style::default().bg(gundam_panel()).fg(gundam_text()))
+        .highlight_symbol(if active { "> " } else { "  " })
+        .highlight_style(highlight_style);
+
+    let selected = if has_items { Some(selection) } else { None };
+    let mut state = ListState::default().with_selected(selected);
+    frame.render_stateful_widget(list, area, &mut state);
+}
+
+fn done_p1_items(app: &App) -> Vec<ListItem<'_>> {
+    app.controller
+        .done_p1()
+        .map(|task| {
+            ListItem::new(Line::from(vec![
+                Span::styled(
+                    format!("{:>4} ", format!("#{}", task.rank)),
+                    task_accent_style(&task.status),
+                ),
+                Span::styled(task.title.as_str(), task_title_style(&task.status)),
+            ]))
+        })
+        .collect()
+}
+
+fn done_p2_items(app: &App) -> Vec<ListItem<'_>> {
+    app.controller
+        .done_p2()
+        .map(|task| {
+            ListItem::new(Line::from(vec![
+                Span::styled("* ", task_accent_style(&task.status)),
+                Span::styled(task.title.as_str(), task_title_style(&task.status)),
+            ]))
+        })
+        .collect()
+}
+
+fn done_p3_items(app: &App) -> Vec<ListItem<'_>> {
+    app.controller
+        .done_p3()
+        .map(|task| {
+            ListItem::new(Line::from(vec![
+                Span::styled("* ", task_accent_style(&task.status)),
+                Span::styled(task.title.as_str(), task_title_style(&task.status)),
+            ]))
+        })
+        .collect()
 }
 
 fn selected_detail_text(app: &App) -> Text<'static> {
@@ -598,7 +826,7 @@ fn decision_text(decision: &crate::model::Decision) -> Text<'static> {
     lines.push(Line::from(Span::styled(
         format!("{} ({})", decision.title, decision.date),
         Style::default()
-            .fg(gundam_blue())
+            .fg(gundam_info())
             .add_modifier(Modifier::BOLD),
     )));
 
@@ -667,7 +895,7 @@ fn task_text(
     let mut lines = vec![Line::from(Span::styled(
         title.to_string(),
         Style::default()
-            .fg(gundam_blue())
+            .fg(gundam_info())
             .add_modifier(Modifier::BOLD),
     ))];
 
@@ -707,7 +935,7 @@ fn daily_text(entry: DailyEntry<'_>) -> Text<'static> {
         Line::from(Span::styled(
             entry.task.title.clone(),
             Style::default()
-                .fg(gundam_blue())
+                .fg(gundam_info())
                 .add_modifier(Modifier::BOLD),
         )),
         Line::from(format!("bucket: {:?}", entry.bucket).to_lowercase()),
@@ -769,7 +997,7 @@ fn daily_list_item(entry: DailyEntry<'_>) -> ListItem<'_> {
                 .last_hit
                 .map(|date| date.to_string())
                 .unwrap_or_else(|| "never".to_string()),
-            Style::default().fg(gundam_blue()),
+            Style::default().fg(gundam_info()),
         ),
         Span::raw(" "),
         Span::styled(if entry.stale { "STALE" } else { "fresh" }, stale_style),
@@ -802,6 +1030,39 @@ fn label_for_task_status(status: &crate::model::TaskStatus) -> &'static str {
     }
 }
 
+fn screen_label(screen: Screen) -> &'static str {
+    match screen {
+        Screen::Top3 => "Top3",
+        Screen::P1 => "P1",
+        Screen::P2 => "P2",
+        Screen::P3 => "P3",
+        Screen::Daily => "Daily",
+        Screen::Decisions => "Decisions",
+        Screen::Done => "Done",
+    }
+}
+
+fn task_title_style(status: &crate::model::TaskStatus) -> Style {
+    match status {
+        crate::model::TaskStatus::Todo => Style::default().fg(gundam_text()),
+        crate::model::TaskStatus::Done => Style::default().fg(gundam_muted()),
+    }
+}
+
+fn task_accent_style(status: &crate::model::TaskStatus) -> Style {
+    match status {
+        crate::model::TaskStatus::Todo => Style::default().fg(gundam_yellow()),
+        crate::model::TaskStatus::Done => Style::default().fg(gundam_muted()),
+    }
+}
+
+fn task_status_style(status: &crate::model::TaskStatus) -> Style {
+    match status {
+        crate::model::TaskStatus::Todo => Style::default().fg(gundam_info()),
+        crate::model::TaskStatus::Done => Style::default().fg(gundam_muted()),
+    }
+}
+
 fn display_path(path: &Path) -> String {
     path.to_string_lossy().into_owned()
 }
@@ -812,4 +1073,70 @@ fn timestamp_label() -> String {
 
 fn time_until_refresh(last_refresh: Instant) -> Duration {
     REFRESH_INTERVAL.saturating_sub(last_refresh.elapsed())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+    use std::path::{Path, PathBuf};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use super::resolve_default_tasks_path;
+
+    #[test]
+    fn default_path_prefers_yml_when_both_files_exist() {
+        let dir = unique_temp_dir("prefers-yml");
+        write_file(&dir.join("data/tasks.yml"));
+        write_file(&dir.join("data/tasks.yaml"));
+
+        assert_eq!(
+            resolve_default_tasks_path(&dir),
+            Some(PathBuf::from("data/tasks.yml"))
+        );
+
+        fs::remove_dir_all(dir).expect("temp dir should be removed");
+    }
+
+    #[test]
+    fn default_path_falls_back_to_yaml() {
+        let dir = unique_temp_dir("falls-back-yaml");
+        write_file(&dir.join("data/tasks.yaml"));
+
+        assert_eq!(
+            resolve_default_tasks_path(&dir),
+            Some(PathBuf::from("data/tasks.yaml"))
+        );
+
+        fs::remove_dir_all(dir).expect("temp dir should be removed");
+    }
+
+    #[test]
+    fn default_path_returns_none_when_no_default_exists() {
+        let dir = unique_temp_dir("missing-defaults");
+
+        assert_eq!(resolve_default_tasks_path(&dir), None);
+
+        fs::remove_dir_all(dir).expect("temp dir should be removed");
+    }
+
+    fn write_file(path: &Path) {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).expect("parent directory should be created");
+        }
+
+        fs::write(path, "schema_version: 1\n").expect("file should be written");
+    }
+
+    fn unique_temp_dir(label: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock should be after epoch")
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "learning-computer-ui-{label}-{}-{nanos}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&dir).expect("temp dir should be created");
+        dir
+    }
 }

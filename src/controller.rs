@@ -13,6 +13,7 @@ pub enum Screen {
     P3,
     Daily,
     Decisions,
+    Done,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -25,6 +26,13 @@ pub enum DetailMode {
 pub enum DailyBucket {
     Active,
     Later,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DonePane {
+    P1,
+    P2,
+    P3,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -50,8 +58,10 @@ pub struct Controller {
     today: NaiveDate,
     pub screen: Screen,
     pub detail_mode: DetailMode,
+    done_pane: DonePane,
     derived: Derived,
     selections: Selections,
+    filters: Filters,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -62,6 +72,17 @@ struct Selections {
     p3: usize,
     daily: usize,
     decisions: usize,
+    done_p1: usize,
+    done_p2: usize,
+    done_p3: usize,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct Filters {
+    top3_show_done: bool,
+    p1_show_done: bool,
+    p2_show_done: bool,
+    p3_show_done: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -90,8 +111,10 @@ impl Controller {
             today,
             screen: Screen::Top3,
             detail_mode: DetailMode::Closed,
+            done_pane: DonePane::P1,
             derived,
             selections: Selections::default(),
+            filters: Filters::default(),
         };
         controller.repair_all_selections();
         controller
@@ -109,8 +132,57 @@ impl Controller {
         };
     }
 
+    pub fn toggle_done_visibility(&mut self) -> Option<bool> {
+        let show_done = {
+            let show_done = self.filters.at_mut(self.screen)?;
+            *show_done = !*show_done;
+            *show_done
+        };
+        self.repair_selection(self.screen);
+        Some(show_done)
+    }
+
+    pub fn shows_done(&self, screen: Screen) -> bool {
+        self.filters.at(screen).unwrap_or(false)
+    }
+
+    pub fn done_pane(&self) -> DonePane {
+        self.done_pane
+    }
+
+    pub fn focus_next_done_pane(&mut self) -> bool {
+        if self.screen != Screen::Done {
+            return false;
+        }
+
+        self.done_pane = match self.done_pane {
+            DonePane::P1 => DonePane::P2,
+            DonePane::P2 => DonePane::P3,
+            DonePane::P3 => DonePane::P1,
+        };
+        self.repair_selection(Screen::Done);
+        true
+    }
+
+    pub fn focus_previous_done_pane(&mut self) -> bool {
+        if self.screen != Screen::Done {
+            return false;
+        }
+
+        self.done_pane = match self.done_pane {
+            DonePane::P1 => DonePane::P3,
+            DonePane::P2 => DonePane::P1,
+            DonePane::P3 => DonePane::P2,
+        };
+        self.repair_selection(Screen::Done);
+        true
+    }
+
     pub fn selection(&self) -> usize {
-        *self.selections.at(self.screen)
+        match self.screen {
+            Screen::Done => *self.selections.at_done(self.done_pane),
+            _ => *self.selections.at(self.screen),
+        }
     }
 
     pub fn entry_count(&self) -> usize {
@@ -120,7 +192,7 @@ impl Controller {
     pub fn select_next(&mut self) {
         let len = self.entry_count();
         if len > 0 {
-            let selection = self.selections.at_mut(self.screen);
+            let selection = self.selection_mut_for_active_screen();
             *selection = (*selection + 1) % len;
         }
     }
@@ -128,7 +200,7 @@ impl Controller {
     pub fn select_previous(&mut self) {
         let len = self.entry_count();
         if len > 0 {
-            let selection = self.selections.at_mut(self.screen);
+            let selection = self.selection_mut_for_active_screen();
             *selection = if *selection == 0 {
                 len - 1
             } else {
@@ -138,40 +210,58 @@ impl Controller {
     }
 
     pub fn select_first(&mut self) {
-        *self.selections.at_mut(self.screen) = 0;
+        *self.selection_mut_for_active_screen() = 0;
     }
 
     pub fn select_last(&mut self) {
         let len = self.entry_count();
-        *self.selections.at_mut(self.screen) = len.saturating_sub(1);
+        *self.selection_mut_for_active_screen() = len.saturating_sub(1);
     }
 
     pub fn top_three(&self) -> impl Iterator<Item = &P1Task> + '_ {
-        self.derived
-            .top3_order
-            .iter()
-            .filter_map(|&index| self.snapshot.tasks.p1.get(index))
+        self.visible_top3_order()
+            .into_iter()
+            .filter_map(|index| self.snapshot.tasks.p1.get(index))
     }
 
     pub fn p1(&self) -> impl Iterator<Item = &P1Task> + '_ {
-        self.derived
-            .p1_order
-            .iter()
-            .filter_map(|&index| self.snapshot.tasks.p1.get(index))
+        self.visible_p1_order()
+            .into_iter()
+            .filter_map(|index| self.snapshot.tasks.p1.get(index))
     }
 
     pub fn p2(&self) -> impl Iterator<Item = &P2Task> + '_ {
-        self.derived
-            .p2_order
-            .iter()
-            .filter_map(|&index| self.snapshot.tasks.p2.get(index))
+        self.visible_p2_order()
+            .into_iter()
+            .filter_map(|index| self.snapshot.tasks.p2.get(index))
     }
 
     pub fn p3(&self) -> impl Iterator<Item = &P3Task> + '_ {
-        self.derived
-            .p3_order
-            .iter()
-            .filter_map(|&index| self.snapshot.tasks.p3.get(index))
+        self.visible_p3_order()
+            .into_iter()
+            .filter_map(|index| self.snapshot.tasks.p3.get(index))
+    }
+
+    pub fn done_p1(&self) -> impl Iterator<Item = &P1Task> + '_ {
+        self.done_p1_order()
+            .into_iter()
+            .filter_map(|index| self.snapshot.tasks.p1.get(index))
+    }
+
+    pub fn done_p2(&self) -> impl Iterator<Item = &P2Task> + '_ {
+        self.done_p2_order()
+            .into_iter()
+            .filter_map(|index| self.snapshot.tasks.p2.get(index))
+    }
+
+    pub fn done_p3(&self) -> impl Iterator<Item = &P3Task> + '_ {
+        self.done_p3_order()
+            .into_iter()
+            .filter_map(|index| self.snapshot.tasks.p3.get(index))
+    }
+
+    pub fn done_selection(&self, pane: DonePane) -> usize {
+        *self.selections.at_done(pane)
     }
 
     pub fn daily(&self) -> impl Iterator<Item = DailyEntry<'_>> + '_ {
@@ -201,6 +291,9 @@ impl Controller {
             p3_selected_id: self.id_for(Screen::P3),
             daily_selected_id: self.id_for(Screen::Daily),
             decisions_selected_id: self.id_for(Screen::Decisions),
+            done_p1_selected_id: self.id_for_done_pane(DonePane::P1),
+            done_p2_selected_id: self.id_for_done_pane(DonePane::P2),
+            done_p3_selected_id: self.id_for_done_pane(DonePane::P3),
         };
 
         self.snapshot = snapshot;
@@ -214,6 +307,9 @@ impl Controller {
             Screen::Decisions,
             restore_state.decisions_selected_id.as_deref(),
         );
+        self.restore_done_pane(DonePane::P1, restore_state.done_p1_selected_id.as_deref());
+        self.restore_done_pane(DonePane::P2, restore_state.done_p2_selected_id.as_deref());
+        self.restore_done_pane(DonePane::P3, restore_state.done_p3_selected_id.as_deref());
         self.repair_selection(self.screen);
     }
 
@@ -225,21 +321,22 @@ impl Controller {
             Screen::P3 => self.p3_at(index).map(Selected::P3),
             Screen::Daily => self.daily_at(index).map(Selected::Daily),
             Screen::Decisions => self.decisions().get(index).map(Selected::Decision),
+            Screen::Done => self.done_at(self.done_pane, index),
         }
     }
 
     fn top_three_at(&self, index: usize) -> Option<&P1Task> {
-        self.derived
-            .top3_order
+        self.visible_top3_order()
             .get(index)
-            .and_then(|&task_index| self.snapshot.tasks.p1.get(task_index))
+            .copied()
+            .and_then(|task_index| self.snapshot.tasks.p1.get(task_index))
     }
 
     fn p1_at(&self, index: usize) -> Option<&P1Task> {
-        self.derived
-            .p1_order
+        self.visible_p1_order()
             .get(index)
-            .and_then(|&task_index| self.snapshot.tasks.p1.get(task_index))
+            .copied()
+            .and_then(|task_index| self.snapshot.tasks.p1.get(task_index))
     }
 
     fn daily_at(&self, index: usize) -> Option<DailyEntry<'_>> {
@@ -250,17 +347,46 @@ impl Controller {
     }
 
     fn p2_at(&self, index: usize) -> Option<&P2Task> {
-        self.derived
-            .p2_order
+        self.visible_p2_order()
             .get(index)
-            .and_then(|&task_index| self.snapshot.tasks.p2.get(task_index))
+            .copied()
+            .and_then(|task_index| self.snapshot.tasks.p2.get(task_index))
     }
 
     fn p3_at(&self, index: usize) -> Option<&P3Task> {
-        self.derived
-            .p3_order
+        self.visible_p3_order()
             .get(index)
-            .and_then(|&task_index| self.snapshot.tasks.p3.get(task_index))
+            .copied()
+            .and_then(|task_index| self.snapshot.tasks.p3.get(task_index))
+    }
+
+    fn done_at(&self, pane: DonePane, index: usize) -> Option<Selected<'_>> {
+        match pane {
+            DonePane::P1 => self.done_p1_at(index).map(Selected::P1),
+            DonePane::P2 => self.done_p2_at(index).map(Selected::P2),
+            DonePane::P3 => self.done_p3_at(index).map(Selected::P3),
+        }
+    }
+
+    fn done_p1_at(&self, index: usize) -> Option<&P1Task> {
+        self.done_p1_order()
+            .get(index)
+            .copied()
+            .and_then(|task_index| self.snapshot.tasks.p1.get(task_index))
+    }
+
+    fn done_p2_at(&self, index: usize) -> Option<&P2Task> {
+        self.done_p2_order()
+            .get(index)
+            .copied()
+            .and_then(|task_index| self.snapshot.tasks.p2.get(task_index))
+    }
+
+    fn done_p3_at(&self, index: usize) -> Option<&P3Task> {
+        self.done_p3_order()
+            .get(index)
+            .copied()
+            .and_then(|task_index| self.snapshot.tasks.p3.get(task_index))
     }
 
     fn daily_from(&self, entry: &DailyDerived) -> Option<DailyEntry<'_>> {
@@ -280,12 +406,13 @@ impl Controller {
 
     fn len_for(&self, screen: Screen) -> usize {
         match screen {
-            Screen::Top3 => self.derived.top3_order.len(),
-            Screen::P1 => self.derived.p1_order.len(),
-            Screen::P2 => self.derived.p2_order.len(),
-            Screen::P3 => self.derived.p3_order.len(),
+            Screen::Top3 => self.visible_top3_order().len(),
+            Screen::P1 => self.visible_p1_order().len(),
+            Screen::P2 => self.visible_p2_order().len(),
+            Screen::P3 => self.visible_p3_order().len(),
             Screen::Daily => self.derived.daily.len(),
             Screen::Decisions => self.snapshot.decisions.len(),
+            Screen::Done => self.done_len_for_pane(self.done_pane),
         }
     }
 
@@ -298,14 +425,32 @@ impl Controller {
     /// here so `restore` can find the same logical item in the new snapshot
     /// after replacement.
     fn id_for(&self, screen: Screen) -> Option<String> {
-        self.entry_at(screen, *self.selections.at(screen))
-            .map(selected_id)
+        match screen {
+            Screen::Done => self
+                .done_at(self.done_pane, *self.selections.at_done(self.done_pane))
+                .map(selected_id),
+            _ => self
+                .entry_at(screen, *self.selections.at(screen))
+                .map(selected_id),
+        }
     }
 
     fn restore(&mut self, screen: Screen, saved_id: Option<&str>) {
         match saved_id.and_then(|saved_id| self.index_for(screen, saved_id)) {
             Some(index) => *self.selections.at_mut(screen) = index,
             None => self.repair_selection(screen),
+        }
+    }
+
+    fn id_for_done_pane(&self, pane: DonePane) -> Option<String> {
+        self.done_at(pane, *self.selections.at_done(pane))
+            .map(selected_id)
+    }
+
+    fn restore_done_pane(&mut self, pane: DonePane, saved_id: Option<&str>) {
+        match saved_id.and_then(|saved_id| self.index_for_done_pane(pane, saved_id)) {
+            Some(index) => *self.selections.at_done_mut(pane) = index,
+            None => self.repair_done_selection(pane),
         }
     }
 
@@ -317,6 +462,14 @@ impl Controller {
         })
     }
 
+    fn index_for_done_pane(&self, pane: DonePane, id: &str) -> Option<usize> {
+        let len = self.done_len_for_pane(pane);
+        (0..len).position(|index| {
+            self.done_at(pane, index)
+                .is_some_and(|selected| selected_id(selected) == id)
+        })
+    }
+
     fn repair_all_selections(&mut self) {
         self.repair_selection(Screen::Top3);
         self.repair_selection(Screen::P1);
@@ -324,6 +477,9 @@ impl Controller {
         self.repair_selection(Screen::P3);
         self.repair_selection(Screen::Daily);
         self.repair_selection(Screen::Decisions);
+        self.repair_done_selection(DonePane::P1);
+        self.repair_done_selection(DonePane::P2);
+        self.repair_done_selection(DonePane::P3);
     }
 
     /// Repair a stored selection after the underlying data changes.
@@ -334,6 +490,11 @@ impl Controller {
     /// bring the stored index back into bounds so the future UI can safely ask
     /// for the selected row without defending against invalid state.
     fn repair_selection(&mut self, screen: Screen) {
+        if screen == Screen::Done {
+            self.repair_done_selection(self.done_pane);
+            return;
+        }
+
         let len = self.len_for(screen);
         let selection = self.selections.at_mut(screen);
         *selection = if len == 0 {
@@ -341,6 +502,107 @@ impl Controller {
         } else {
             (*selection).min(len - 1)
         };
+    }
+
+    fn repair_done_selection(&mut self, pane: DonePane) {
+        let len = self.done_len_for_pane(pane);
+        let selection = self.selections.at_done_mut(pane);
+        *selection = if len == 0 {
+            0
+        } else {
+            (*selection).min(len - 1)
+        };
+    }
+
+    fn selection_mut_for_active_screen(&mut self) -> &mut usize {
+        match self.screen {
+            Screen::Done => self.selections.at_done_mut(self.done_pane),
+            _ => self.selections.at_mut(self.screen),
+        }
+    }
+
+    fn visible_top3_order(&self) -> Vec<usize> {
+        self.derived
+            .p1_order
+            .iter()
+            .copied()
+            .filter(|&index| {
+                self.show_task_in_screen(Screen::Top3, &self.snapshot.tasks.p1[index].status)
+            })
+            .take(TOP_THREE_LIMIT)
+            .collect()
+    }
+
+    fn visible_p1_order(&self) -> Vec<usize> {
+        self.derived
+            .p1_order
+            .iter()
+            .copied()
+            .filter(|&index| {
+                self.show_task_in_screen(Screen::P1, &self.snapshot.tasks.p1[index].status)
+            })
+            .collect()
+    }
+
+    fn visible_p2_order(&self) -> Vec<usize> {
+        self.derived
+            .p2_order
+            .iter()
+            .copied()
+            .filter(|&index| {
+                self.show_task_in_screen(Screen::P2, &self.snapshot.tasks.p2[index].status)
+            })
+            .collect()
+    }
+
+    fn visible_p3_order(&self) -> Vec<usize> {
+        self.derived
+            .p3_order
+            .iter()
+            .copied()
+            .filter(|&index| {
+                self.show_task_in_screen(Screen::P3, &self.snapshot.tasks.p3[index].status)
+            })
+            .collect()
+    }
+
+    fn done_p1_order(&self) -> Vec<usize> {
+        self.derived
+            .p1_order
+            .iter()
+            .copied()
+            .filter(|&index| self.snapshot.tasks.p1[index].status == crate::model::TaskStatus::Done)
+            .collect()
+    }
+
+    fn done_p2_order(&self) -> Vec<usize> {
+        self.derived
+            .p2_order
+            .iter()
+            .copied()
+            .filter(|&index| self.snapshot.tasks.p2[index].status == crate::model::TaskStatus::Done)
+            .collect()
+    }
+
+    fn done_p3_order(&self) -> Vec<usize> {
+        self.derived
+            .p3_order
+            .iter()
+            .copied()
+            .filter(|&index| self.snapshot.tasks.p3[index].status == crate::model::TaskStatus::Done)
+            .collect()
+    }
+
+    fn done_len_for_pane(&self, pane: DonePane) -> usize {
+        match pane {
+            DonePane::P1 => self.done_p1_order().len(),
+            DonePane::P2 => self.done_p2_order().len(),
+            DonePane::P3 => self.done_p3_order().len(),
+        }
+    }
+
+    fn show_task_in_screen(&self, screen: Screen, status: &crate::model::TaskStatus) -> bool {
+        self.shows_done(screen) || status != &crate::model::TaskStatus::Done
     }
 }
 
@@ -353,6 +615,7 @@ impl Selections {
             Screen::P3 => &self.p3,
             Screen::Daily => &self.daily,
             Screen::Decisions => &self.decisions,
+            Screen::Done => panic!("done selections are addressed by pane"),
         }
     }
 
@@ -364,6 +627,45 @@ impl Selections {
             Screen::P3 => &mut self.p3,
             Screen::Daily => &mut self.daily,
             Screen::Decisions => &mut self.decisions,
+            Screen::Done => panic!("done selections are addressed by pane"),
+        }
+    }
+
+    fn at_done(&self, pane: DonePane) -> &usize {
+        match pane {
+            DonePane::P1 => &self.done_p1,
+            DonePane::P2 => &self.done_p2,
+            DonePane::P3 => &self.done_p3,
+        }
+    }
+
+    fn at_done_mut(&mut self, pane: DonePane) -> &mut usize {
+        match pane {
+            DonePane::P1 => &mut self.done_p1,
+            DonePane::P2 => &mut self.done_p2,
+            DonePane::P3 => &mut self.done_p3,
+        }
+    }
+}
+
+impl Filters {
+    fn at(&self, screen: Screen) -> Option<bool> {
+        match screen {
+            Screen::Top3 => Some(self.top3_show_done),
+            Screen::P1 => Some(self.p1_show_done),
+            Screen::P2 => Some(self.p2_show_done),
+            Screen::P3 => Some(self.p3_show_done),
+            Screen::Daily | Screen::Decisions | Screen::Done => None,
+        }
+    }
+
+    fn at_mut(&mut self, screen: Screen) -> Option<&mut bool> {
+        match screen {
+            Screen::Top3 => Some(&mut self.top3_show_done),
+            Screen::P1 => Some(&mut self.p1_show_done),
+            Screen::P2 => Some(&mut self.p2_show_done),
+            Screen::P3 => Some(&mut self.p3_show_done),
+            Screen::Daily | Screen::Decisions | Screen::Done => None,
         }
     }
 }
@@ -452,6 +754,9 @@ struct SelectionRestoreState {
     p3_selected_id: Option<String>,
     daily_selected_id: Option<String>,
     decisions_selected_id: Option<String>,
+    done_p1_selected_id: Option<String>,
+    done_p2_selected_id: Option<String>,
+    done_p3_selected_id: Option<String>,
 }
 
 #[cfg(test)]
@@ -461,6 +766,13 @@ mod tests {
 
     fn test_controller() -> Controller {
         let snapshot = Snapshot::from_yaml_str(FIXTURE).expect("controller fixture should parse");
+        let today = NaiveDate::from_ymd_opt(2026, 3, 17).unwrap();
+        Controller::new(snapshot, today)
+    }
+
+    fn test_controller_with_done() -> Controller {
+        let snapshot =
+            Snapshot::from_yaml_str(FIXTURE_WITH_DONE).expect("done fixture should parse");
         let today = NaiveDate::from_ymd_opt(2026, 3, 17).unwrap();
         Controller::new(snapshot, today)
     }
@@ -572,6 +884,92 @@ decisions:
       - One startup note.
 "#;
 
+    const FIXTURE_WITH_DONE: &str = r#"
+schema_version: 1
+captured_on: 2026-03-17
+source_files: []
+ingestion_rules: []
+tasks:
+  p1:
+    - id: p1-001
+      rank: 1
+      status: done
+      title: Priority Item Alpha
+      raw_text: Priority Item Alpha
+      links: []
+      notes: []
+      completed_at: 2026-03-17
+    - id: p1-002
+      rank: 2
+      status: todo
+      title: Priority Item Beta
+      raw_text: Priority Item Beta
+      links: []
+      notes: []
+    - id: p1-003
+      rank: 3
+      status: done
+      title: Priority Item Gamma
+      raw_text: Priority Item Gamma
+      links: []
+      notes: []
+      completed_at: 2026-03-17
+    - id: p1-004
+      rank: 4
+      status: todo
+      title: Priority Item Delta
+      raw_text: Priority Item Delta
+      links: []
+      notes: []
+    - id: p1-005
+      rank: 5
+      status: todo
+      title: Priority Item Epsilon
+      raw_text: Priority Item Epsilon
+      links: []
+      notes: []
+  p2:
+    - id: p2-002
+      source_order: 2
+      status: done
+      title: Secondary Item Beta
+      raw_text: Secondary Item Beta
+      links: []
+      notes: []
+      completed_at: 2026-03-17
+    - id: p2-001
+      source_order: 1
+      status: todo
+      title: Secondary Item Alpha
+      raw_text: Secondary Item Alpha
+      links: []
+      notes: []
+  p3:
+    - id: p3-002
+      source_order: 2
+      status: done
+      title: Background Item Beta
+      raw_text: Background Item Beta
+      links: []
+      notes: []
+      completed_at: 2026-03-17
+    - id: p3-001
+      source_order: 1
+      status: todo
+      title: Background Item Alpha
+      raw_text: Background Item Alpha
+      links: []
+      notes: []
+dailies:
+  active: []
+  later: []
+session_state:
+  active_work: []
+  blocked: []
+  daily_logs: []
+decisions: []
+"#;
+
     #[test]
     fn derives_top_three_from_rank_order_once() {
         let controller = test_controller();
@@ -598,7 +996,97 @@ decisions:
         let p3_ids: Vec<_> = controller.p3().map(|task| task.id.as_str()).collect();
 
         assert_eq!(p2_ids, vec!["p2-001", "p2-002"]);
+        assert_eq!(p3_ids, vec!["p3-001"]);
+    }
+
+    #[test]
+    fn hides_done_tasks_by_default_in_task_views() {
+        let controller = test_controller_with_done();
+
+        let top3_ids: Vec<_> = controller
+            .top_three()
+            .map(|task| task.id.as_str())
+            .collect();
+        let p1_ids: Vec<_> = controller.p1().map(|task| task.id.as_str()).collect();
+        let p2_ids: Vec<_> = controller.p2().map(|task| task.id.as_str()).collect();
+        let p3_ids: Vec<_> = controller.p3().map(|task| task.id.as_str()).collect();
+
+        assert_eq!(top3_ids, vec!["p1-002", "p1-004", "p1-005"]);
+        assert_eq!(p1_ids, vec!["p1-002", "p1-004", "p1-005"]);
+        assert_eq!(p2_ids, vec!["p2-001"]);
+        assert_eq!(p3_ids, vec!["p3-001"]);
+    }
+
+    #[test]
+    fn toggles_done_visibility_per_task_view() {
+        let mut controller = test_controller_with_done();
+
+        controller.set_screen(Screen::P1);
+        assert_eq!(controller.toggle_done_visibility(), Some(true));
+        let p1_ids: Vec<_> = controller.p1().map(|task| task.id.as_str()).collect();
+        assert_eq!(
+            p1_ids,
+            vec!["p1-001", "p1-002", "p1-003", "p1-004", "p1-005"]
+        );
+
+        controller.set_screen(Screen::Top3);
+        assert_eq!(controller.toggle_done_visibility(), Some(true));
+        let top3_ids: Vec<_> = controller
+            .top_three()
+            .map(|task| task.id.as_str())
+            .collect();
+        assert_eq!(top3_ids, vec!["p1-001", "p1-002", "p1-003"]);
+
+        controller.set_screen(Screen::P2);
+        assert_eq!(controller.toggle_done_visibility(), Some(true));
+        let p2_ids: Vec<_> = controller.p2().map(|task| task.id.as_str()).collect();
+        assert_eq!(p2_ids, vec!["p2-001", "p2-002"]);
+
+        controller.set_screen(Screen::P3);
+        assert_eq!(controller.toggle_done_visibility(), Some(true));
+        let p3_ids: Vec<_> = controller.p3().map(|task| task.id.as_str()).collect();
         assert_eq!(p3_ids, vec!["p3-001", "p3-002"]);
+    }
+
+    #[test]
+    fn exposes_done_items_in_done_screen_by_pane() {
+        let mut controller = test_controller_with_done();
+        controller.set_screen(Screen::Done);
+
+        match controller.selected() {
+            Some(Selected::P1(task)) => assert_eq!(task.id, "p1-001"),
+            _ => panic!("expected done p1 selection"),
+        }
+
+        controller.focus_next_done_pane();
+        match controller.selected() {
+            Some(Selected::P2(task)) => assert_eq!(task.id, "p2-002"),
+            _ => panic!("expected done p2 selection"),
+        }
+
+        controller.focus_next_done_pane();
+        match controller.selected() {
+            Some(Selected::P3(task)) => assert_eq!(task.id, "p3-002"),
+            _ => panic!("expected done p3 selection"),
+        }
+    }
+
+    #[test]
+    fn keeps_done_selections_independent_per_done_pane() {
+        let mut controller = test_controller_with_done();
+        controller.set_screen(Screen::Done);
+
+        controller.focus_next_done_pane();
+        assert_eq!(controller.done_pane(), DonePane::P2);
+        assert_eq!(controller.selection(), 0);
+
+        controller.focus_next_done_pane();
+        assert_eq!(controller.done_pane(), DonePane::P3);
+        assert_eq!(controller.selection(), 0);
+
+        controller.focus_previous_done_pane();
+        assert_eq!(controller.done_pane(), DonePane::P2);
+        assert_eq!(controller.selection(), 0);
     }
 
     #[test]

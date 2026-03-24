@@ -14,6 +14,8 @@ pub enum ParseError {
 pub enum LoadError {
     #[error("source path has unsupported extension: {path}")]
     InvalidExtension { path: PathBuf },
+    #[error("no default task file found; checked data/tasks.yml and data/tasks.yaml")]
+    MissingDefaultPaths,
     #[error("source path does not exist: {path}")]
     MissingPath { path: PathBuf },
     #[error("source path is a directory: {path}")]
